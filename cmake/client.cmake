@@ -34,6 +34,7 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/snd_codec_opus.c
     ${SOURCE_DIR}/client/qal.c
     ${SOURCE_DIR}/client/snd_openal.c
+    ${SOURCE_DIR}/winlatorxr/xr_api.c
     ${SOURCE_DIR}/sdl/sdl_input.c
     ${SOURCE_DIR}/sdl/sdl_snd.c
     ${CLIENT_PLATFORM_SOURCES}

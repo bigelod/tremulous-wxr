@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // cl_main.c  -- client main loop
 
 #include "client.h"
+#include "../winlatorxr/xr_api.h"
 #include <limits.h>
 
 #include "../sys/sys_local.h"
@@ -3198,6 +3199,8 @@ void CL_Frame ( int msec ) {
 		return;
 	}
 
+	XR_Frame( );
+
 	// We may have a download prompt ready
 	if( ( com_downloadPrompt->integer & DLP_TYPE_MASK ) &&
 	    !( com_downloadPrompt->integer & DLP_PROMPTED ) ) {
@@ -3989,6 +3992,8 @@ void CL_Init( void ) {
 	Cvar_Get( "cl_guid", "", CVAR_USERINFO | CVAR_ROM );
 	CL_UpdateGUID( NULL, 0 );
 
+	XR_Init( );
+
 	Com_Printf( "----- Client Initialization Complete -----\n" );
 }
 
@@ -4019,6 +4024,8 @@ void CL_Shutdown(char *finalmsg, qboolean disconnect, qboolean quit)
 
 	if(disconnect)
 		CL_Disconnect(qtrue);
+
+	XR_Shutdown( );
 
 	CL_ClearMemory(qtrue);
 	CL_Snd_Shutdown();

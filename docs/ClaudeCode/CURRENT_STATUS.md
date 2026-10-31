@@ -7,11 +7,16 @@ when something is written.
 
 ## One-line status
 
-**Stage 0 of 10 complete - intake done, D1 and D2 settled.** No VR code
-exists in the repository yet. The next action is **stage 1**: build stock
-Tremulous x64 for Windows, run it in a WinlatorXR container on the Quest 3,
-and characterise the OpenGL path - which is also the measurement that decides
-whether we stay on OpenGL or port a Vulkan renderer.
+**Stages 2 and 4 are code-complete and verified on PC. Nothing has run on
+hardware yet, so no checkpoint is signed off.** The XrApi 0.5 client parses,
+normalises and replies correctly against a spoofed runtime, and `vr.log`
+carries the build stamp on line 1. **Stage 1 - the on-device OpenGL
+characterisation - has been deliberately deferred** at the owner's decision:
+the renderer is swappable later and stages 2, 4 and 6 do not depend on it.
+
+The next action is **stage 6**, the 6DOF camera via `CG_R_RENDERSCENE`,
+which can be developed against the spoofer on PC. Stage 5 (sync pixel) is the
+one piece that a renderer swap would force us to rewrite.
 
 ---
 
@@ -19,18 +24,19 @@ whether we stay on OpenGL or port a Vulkan renderer.
 
 | | State |
 |---|---|
-| Tremulous engine, flat, desktop | Stock `darklegion/tremulous` fork at `ecb41eac`, builds via CMake |
-| VR code | **None.** `code/winlatorxr/` does not exist; `grep -ri "vr_enable\|xr_api" code/` is empty |
-| XrApi client | Not started |
-| Sync pixel | Not started |
-| Head tracking | Not started |
+| Tremulous engine, flat, desktop | Builds and runs x64 Release. `tremded` reaches `atcs` with our own QVMs |
+| VR code | `code/winlatorxr/xr_api.{c,h}`, wired into `cmake/client.cmake` |
+| XrApi client | **Working on PC.** 0.5 handshake, bind 7872, drain, parse, normalise, outbound on 7278 |
+| Sync pixel | Not started - **stage 5**, and the only renderer-coupled piece |
+| Head tracking | Not started - **stage 6**, next action |
 | Window handling | Stock SDL2 |
-| Build-and-deploy script | Not started |
-| Container test on Quest 3 | **Not done** - this is the next action |
+| Build-and-deploy script | `scripts/deploy_wxr.ps1`, freshness guard tested and confirmed to refuse |
+| Runtime simulator | `scripts/xr_spoof.py` - unattended, and sends deliberately non-unit quaternions |
+| Container test on Quest 3 | **Not done.** Deferred by decision, not blocked |
 | Planning docs | `docs/general_wxr/` (shared guidance), `docs/MetaAI/` (prior sketch), `docs/ClaudeCode/` (this set) |
 
-`docs/general_wxr/` and `docs/MetaAI/` are both **untracked** in git. Worth
-deciding whether they should be committed.
+`docs/general_wxr/` and `docs/MetaAI/` are both **committed** as of
+`456dbb74` - 36 files. That open question is closed.
 
 ---
 
@@ -39,12 +45,12 @@ deciding whether they should be committed.
 | | Milestone | State |
 |---|---|---|
 | 0 | Feasibility assessed, intake complete, D1/D2 signed off | **Done** - 31 Oct 2026 |
-| 1 | Unmodified Tremulous runs in a container; OpenGL path characterised | Not started - **next action** |
-| 2 | Our code loads, logs, build stamp, deploy guard | Not started |
+| 1 | Unmodified Tremulous runs in a container; OpenGL path characterised | **Deferred by decision, 31 Oct 2026.** Builds and runs on PC; not yet on device |
+| 2 | Our code loads, logs, build stamp, deploy guard | **Code complete, PC-verified.** CHECKPOINT 2 outstanding (device) |
 | 3 | Borderless window filling the display | Not started |
-| 4 | XrApi 0.5 client, device-verified button table | Not started |
-| 5 | Sync pixel | Not started |
-| 6 | 6DOF head tracking feels locked | Not started |
+| 4 | XrApi 0.5 client, device-verified button table | **Code complete, PC-verified.** CHECKPOINT 4 outstanding - needs one real device packet and a measured button table |
+| 5 | Sync pixel | Not started - renderer-coupled |
+| 6 | 6DOF head tracking feels locked | Not started - **next action** |
 | 7 | Presentation mode chosen and measured | Not started |
 | 8 | Controller input, owner-confirmed mapping | Not started |
 | 9 | HUD legibility and menu mode switching | Not started |
@@ -104,14 +110,75 @@ documentation, not as a report of work done.
 - **Desktop testing.** XrAPI UDP Tester at
   `D:\Daven Bigelow\Documents\GitHub\XrAPIUDPTester\XrAPITestUDP\XrAPITestUDP\bin\Release\net8.0-windows\XrAPITestUDP.exe`.
 
+## Findings worth not rediscovering, 31 October 2026
+
+- **The `cmake` on the owner's PATH is 3.8.2 (2017).** `CMakeLists.txt`
+  requires 3.25 and 3.8 does not know the VS2022 generator exists, so the
+  failure is a confusing generator error rather than a version complaint. The
+  usable copy is the one Visual Studio ships, at
+  `…/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe`.
+  `scripts/deploy_wxr.ps1` resolves it via `vswhere` and refuses anything
+  below 3.25.
+
+- **GPP1 is protocol 70; this tree is protocol 72.** They are not network
+  compatible. `tremulous-gpp.exe` cannot join our servers and vice versa.
+  **Decision, 31 Oct 2026: we target protocol 72**, this tree, the maintained
+  continuation. Revisit only if the live server population turns out to be
+  elsewhere.
+
+- **GPP1 was a mod directory, not a game.** The 2009 engine hardcodes
+  `BASEGAME "base"` and defaults `fs_game` to `"gpp"`, so GPP overlays the
+  1.1.0 data - which is why `gpp/` is under 1 MB. Our tree collapsed that:
+  `fs_game` defaults to `""` and the repo's `assets/` is the maintained
+  successor to `data-gpp1.pk3` (same top-level shape). Correct data layout is
+  **1.1.0's pk3s plus the repo's loose `assets/`**, not `data-gpp1.pk3`.
+
+- **Loose files beat pk3s, verified not assumed.** `FS_AddGameDirectory`
+  prepends each pk3 in sorted order and then prepends the plain directory
+  *last*, so the loose directory sits at the head of `fs_searchpaths`
+  (`code/qcommon/files.c:3000-3010`). Confirmed in a live search-path dump.
+  This is what lets the 1.2 `assets/` shadow 1.1.0's stale `ui` and `configs`.
+
+- **`vms-1.1.0.pk3` is deliberately not staged.** It holds 1.1.0's QVMs; ours
+  supersede them by precedence, but keeping it is a free variable in a
+  debugging session.
+
+- **"Turnip struggles with OpenGL" is an argument *for* Vulkan.** Turnip is a
+  Vulkan driver; there is no OpenGL in it. GL in the container runs
+  GL → Zink → Turnip → Adreno, so a slow GL path indicts the *translation
+  layer*, and a native Vulkan renderer deletes Zink from the stack. Before
+  committing to the `renderervk` port, run a known-good **native Vulkan** app
+  in the same container: that separates "Zink overhead" from "Turnip is
+  broken here" for the price of one trip instead of a renderer port.
+
+- **The engine already stamps the git hash** into its version string
+  (`tremulous 1.2.0_g456dbb74`). No separate build id was needed.
+
+- **The headset codename mapping is HWXR's, reproduced verbatim** from
+  `XRAPI_V0_4_DESC.md` section 2 - not invented. `EUREKA`/`PANTHER` are a
+  Quest 3; every other Meta codename falls through to `QUEST 2`; a non-Meta
+  make passes its codename through unchanged. Verified against six cases
+  including an empty line 2 and a Pico.
+
+  Two things to carry forward. The fall-through **swallows any codename newer
+  than HWXR knew about**, so a future headset reports as a Quest 2 - the raw
+  codename is logged alongside so the log still says what the device was.
+  And this string is not cosmetic: HWXR's comments record that hands are
+  upside down on `SEACLIFF`, `HOLLYWOOD` and `MONTEREY`, so **stage 8's hand
+  orientation hangs off it.** Pico 4 Ultra, the secondary target, will report
+  its own codename and therefore needs its own hand-orientation answer.
+
 ## Still open
 
 - Container resolution, after stage 1.
-- Whether `docs/general_wxr/` and `docs/MetaAI/` get committed.
+- **Stage 1 itself** - on-device OpenGL characterisation, deferred not cancelled.
+- The **button table**, which must be built from a device log of the raw bool
+  string rather than from any document. `vr_verbose 1` already logs it.
+- Whether a native-Vulkan app runs well under Turnip in the owner's container.
 
 ---
 
 ## Currently debugging
 
-Nothing. There is no code to debug, and the honest statement of status is
-that this project has not run yet.
+Nothing. Stages 2 and 4 behave correctly against `scripts/xr_spoof.py`; the
+open items are all device observations that have not been made yet.

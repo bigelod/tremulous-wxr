@@ -1,0 +1,18 @@
+# Add to your CMakeLists.txt
+# Tremulous darklegion uses cmake/
+
+add_library(xr_api STATIC
+    code/winlatorxr/xr_api.c
+    code/winlatorxr/xr_api.h
+)
+target_include_directories(xr_api PUBLIC code/winlatorxr)
+
+# Link to client
+if(TARGET tremulous_client OR TARGET tremulous)
+    target_link_libraries(tremulous_client PRIVATE xr_api ws2_32)
+endif()
+
+# If building with mingw, make sure:
+# target_link_options(tremulous_client PRIVATE -lws2_32)
+
+# In code/cgame/CMakeLists.txt add xr_api include if needed

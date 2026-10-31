@@ -1,0 +1,11 @@
+{
+  "configurations": [
+    {
+      "name": "x64-Release-VR",
+      "generator": "Ninja",
+      "configurationType": "Release",
+      "buildRoot": "${projectDir}\\build\\${name}",
+      "variables": [{"name":"CMAKE_TOOLCHAIN_FILE","value":"${env.VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake","type":"FILEPATH"}]
+    }
+  ]
+}

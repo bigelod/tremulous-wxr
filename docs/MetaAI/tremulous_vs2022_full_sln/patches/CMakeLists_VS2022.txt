@@ -1,0 +1,23 @@
+# VS2022 addition for CMakeLists.txt
+# Works with: cmake -G "Visual Studio 17 2022" -A x64
+
+add_library(xr_api STATIC
+    code/winlatorxr/xr_api.c
+    code/winlatorxr/xr_api.h
+)
+target_include_directories(xr_api PUBLIC code/winlatorxr)
+
+# MSVC needs ws2_32
+if(MSVC)
+    target_link_libraries(xr_api PRIVATE ws2_32)
+    target_compile_definitions(xr_api PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # VS2022: use /W3, not /WX
+    target_compile_options(xr_api PRIVATE /W3)
+else()
+    target_link_libraries(xr_api PRIVATE ws2_32)
+endif()
+
+# link to client
+if(TARGET tremulous_client)
+    target_link_libraries(tremulous_client PRIVATE xr_api ws2_32)
+endif()

@@ -1,0 +1,5 @@
+{
+  "name": "tremulous-vr",
+  "version": "1.0.0",
+  "dependencies": ["sdl2","openal-soft","curl","zlib","libjpeg-turbo","freetype"]
+}

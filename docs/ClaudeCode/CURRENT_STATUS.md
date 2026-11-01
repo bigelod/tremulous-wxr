@@ -49,8 +49,8 @@ one piece that a renderer swap would force us to rewrite.
 | 2 | Our code loads, logs, build stamp, deploy guard | **Code complete, PC-verified.** CHECKPOINT 2 outstanding (device) |
 | 3 | Borderless window filling the display | Not started |
 | 4 | XrApi 0.5 client, device-verified button table | **Code complete, PC-verified.** CHECKPOINT 4 outstanding - needs one real device packet and a measured button table |
-| 5 | Sync pixel | Not started - renderer-coupled |
-| 6 | 6DOF head tracking feels locked | Not started - **next action** |
+| 5 | Sync pixel | Not started - renderer-coupled, **next action** |
+| 6 | 6DOF head tracking feels locked | **Code complete, PC-verified** as a spawned rifle human. CHECKPOINT 6 outstanding (device) |
 | 7 | Presentation mode chosen and measured | Not started |
 | 8 | Controller input, owner-confirmed mapping | Not started |
 | 9 | HUD legibility and menu mode switching | Not started |
@@ -167,6 +167,56 @@ documentation, not as a report of work done.
   upside down on `SEACLIFF`, `HOLLYWOOD` and `MONTEREY`, so **stage 8's hand
   orientation hangs off it.** Pico 4 Ultra, the secondary target, will report
   its own codename and therefore needs its own hand-orientation answer.
+
+## Findings from stage 6, 1 November 2026
+
+- **No handedness flip in this engine.** Q3 is right-handed (+X forward,
+  +Y left, +Z up) and so is OpenXR, so the conversion is the pure relabel
+  `(x,y,z)_xr -> (-z,-x,y)_q3`, determinant +1. The generic recipe in
+  `XRAPI_V0_4_DESC.md` flipped z for a left-handed engine; applying that here
+  would have mirrored the world. **Folded back into the general docs.**
+
+- **World scale is 30 units/metre, derived not guessed.** `human_base.cfg`
+  puts the eye at `viewheight 24` with `mins[2] -24`, so 48 units above the
+  feet; at a 1.6 m human eye height that is 30. Still only correct for *one*
+  class - see D9.
+
+- **Head yaw/pitch go through the usercmd, never the render hook.** The
+  server derives the player state from `cmd->angles` and cgame builds
+  `viewaxis` from the player state, so the camera follows with no second
+  application. `cl.viewangles` is adjusted only for the duration of
+  `CL_FinishMove` and restored immediately, so the engine keeps accumulating
+  mouse and stick onto body angles alone. Verified: `bodyYaw` holds steady
+  while head yaw sweeps 60 degrees.
+
+- **Head tracking is inert while spectating a player.** In follow mode the
+  view angles come from the followed client's player state, so our
+  `cmd->angles` are ignored. Expected, not a defect - but it means a device
+  test must *spawn* before judging the camera, or it will look broken.
+
+- **Unattended test recipe**, for repeating this without touching anything:
+  `+devmap atcs +exec vrtest.cfg`, where the cfg does
+  `team humans` then `class rifle`. For humans, **`class` takes a WEAPON
+  name** (`BG_Weapon(WP_MACHINEGUN)->name` == `"rifle"`), not a class name -
+  `class human_base` only queues you and then opens the weapon-choice menu.
+
+- **Two packet sources will silently interleave.** The XrAPI UDP Tester and
+  `scripts/xr_spoof.py` both send to 7872; with both running the drain keeps
+  whichever arrived last and the pose alternates between two headsets. It
+  presents as out-of-range pitch and impossible roll. `raw:` plus
+  `drained 2 queued datagrams` is the tell. Run one source at a time.
+
+## Decisions taken 1 November 2026
+
+- **The HUD stays in VR.** Dropping to a flat 2D mode just to read the HUD
+  would be frustrating in normal play, and Tremulous's HUD carries
+  information the player needs continuously - health, ammo, credits, the
+  build menu. **`MODE_VR 0` is reserved for the main menu only, if it is
+  needed there at all**, and rendering even that in-world is worth
+  investigating rather than assumed impossible. This revises the D6 default
+  of "`MODE_VR 0` in menus" to "`MODE_VR 0` for the main menu at most", and
+  makes stage 9 a question about HUD *legibility and depth placement* rather
+  than about mode switching. Owner's call, 1 Nov 2026.
 
 ## Still open
 

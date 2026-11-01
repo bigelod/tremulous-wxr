@@ -228,6 +228,20 @@ every existing client reads them and why this document previously described
 them as "chars 19 and 20". Both views are workable; know which one your parser
 implements.
 
+**[device - XrAPI UDP Tester, observed 1 Nov 2026] The Tester sends all 21
+characters as a SINGLE token, with no space before the flags.** A real packet
+captured from it reads `... FFFFFFFFFFFFFFFFFFFFF META` — 21 characters
+unbroken — where the runtime's own encoder emits `...FFFFFFFFFFFFFFFFFFF TF`.
+So both spellings are live on the wire from tools you will actually test
+against, and a parser that assumes either one specifically will work against
+one source and fail against the other.
+
+Collect the run across whitespace and bounds-check by index, as `XB(i)` above
+does, and both cases fall out for free. A useful side effect: the two sources
+are then distinguishable in a log only by their *content*, which is how a
+Tremulous WXR session discovered the Tester was running alongside a second
+simulator and interleaving packets into the same socket.
+
 (The `ControllerButton` enum does continue past 19 with `L_THUMBREST` and
 `R_THUMBREST`, but `GUEST_BUTTON_COUNT` stops before them, so they never reach
 the wire and never collide with the flags.)
@@ -701,6 +715,29 @@ p = { pp[0], pp[1], -pp[2] };
 Do not try to flip the quaternion itself. Rotate the axes, flip the results.
 Mirroring a quaternion by hand reliably produces a basis that is subtly not
 orthonormal, and then you spend a day on the symptoms.
+
+**[trap] The flip above is for a LEFT-handed engine. Check which kind yours
+is before copying it.** Rotating the canonical axes is the part that
+generalises; the flip is per-engine, and applying it to a right-handed engine
+mirrors the world. A mirrored world looks plausible — geometry, lighting and
+movement all behave — until someone reads a sign or a logo in it, so this can
+survive a long way into a port before anyone notices.
+
+The test is one line: if the engine's own forward x left == up, it is
+right-handed and there is no flip, only an axis relabel.
+
+**[device - Tremulous WXR, id Tech 3]** Quake 3 is right-handed: +X forward,
++Y left, +Z up (`AnglesToAxis` builds `axis[0]`=forward, `axis[1]`=-right,
+`axis[2]`=up). OpenXR is also right-handed. So the whole conversion there is
+a relabel with determinant +1 and no sign flip anywhere:
+
+```
+    Q3 forward = -Z_xr          (x, y, z)_xr  ->  (-z, -x, y)_q3
+    Q3 left    = -X_xr
+    Q3 up      = +Y_xr
+```
+
+Unity, by contrast, is left-handed and does want the flip as written above.
 
 ### Units
 

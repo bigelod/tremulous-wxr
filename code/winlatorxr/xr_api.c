@@ -41,6 +41,7 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 //    may simply not be there any more.
 
 #include "xr_api.h"
+#include "xr_view.h"
 #include "../qcommon/qcommon.h"
 
 #ifdef _WIN32
@@ -631,6 +632,13 @@ static qboolean XR_ParsePacket( const char *buf )
 	xr.packetsReceived++;
 	xr.lastPacketTime = Sys_Milliseconds();
 
+	// Recentre on the very first pose, so the player starts facing their own
+	// forward instead of wherever the runtime's origin happens to point.
+	// `vr_recentre` is still bound for every time after that.
+	if ( xr.packetsReceived == 1 ) {
+		XR_Recentre( );
+	}
+
 	return qtrue;
 }
 
@@ -771,6 +779,12 @@ void XR_Init( void )
 	// rebuild, which is what HWXR's flag file exists to achieve.
 	vr_fovX    = Cvar_Get( "vr_fovX",    "104.5", CVAR_ARCHIVE );
 	vr_fovY    = Cvar_Get( "vr_fovY",    "104.5", CVAR_ARCHIVE );
+
+	// Before the early return, so every vr_* cvar and the recentre command
+	// exist even with VR off. A setting the player cannot see until they have
+	// already enabled the thing is a setting they cannot find, and vr_enable
+	// is CVAR_LATCH -- it needs setting and then a restart.
+	XR_ViewInit( );
 
 	if ( !vr_enable->integer ) {
 		return;

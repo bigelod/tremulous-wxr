@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // cl.input.c  -- builds an intended movement command to send to the server
 
 #include "client.h"
+#include "../winlatorxr/xr_view.h"
 
 unsigned	frame_msec;
 int			old_com_frameTime;
@@ -604,8 +605,26 @@ usercmd_t CL_CreateCmd( void ) {
 		cl.viewangles[PITCH] = oldAngles[PITCH] - 90;
 	} 
 
-	// store out the final values
-	CL_FinishMove( &cmd );
+	// Hook 2. Head yaw and pitch must reach the usercmd, because the server
+	// has to agree about where the player is aiming -- and from there the
+	// player state drives cgame's view, so the camera follows with no second
+	// application in the render hook.
+	//
+	// cl.viewangles is adjusted only for the duration of CL_FinishMove and
+	// then restored, so the engine's own mouse and stick accumulation keeps
+	// working on body angles alone. Without the restore, the head yaw would
+	// be integrated again on every following frame.
+	{
+		vec3_t	savedAngles;
+
+		VectorCopy( cl.viewangles, savedAngles );
+		XR_AdjustUsercmdAngles( cl.viewangles );
+
+		// store out the final values
+		CL_FinishMove( &cmd );
+
+		VectorCopy( savedAngles, cl.viewangles );
+	}
 
 	// draw debug graphs of turning for mouse testing
 	if ( cl_debugMove->integer ) {

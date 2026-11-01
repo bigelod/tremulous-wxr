@@ -44,8 +44,12 @@ the file rather than working around it.
 - **The window must be borderless and fill the display**, re-applied every
   frame. Chrome in the corner means the sync pixel is never read.
 - **Normalise every quaternion on ingest**, unconditionally.
-- **Swap handedness once, at ingest.** Then never test the handedness flag
-  again for anything spatial — a second test applies the swap twice.
+- **Establish whether the engine needs a handedness swap at all, then do it
+  once, at ingest.** Never test the handedness flag again for anything
+  spatial — a second test applies the swap twice. OpenXR is right-handed, so
+  a right-handed engine (id Tech 3, for one) needs a pure axis relabel and
+  *no* flip; flipping anyway mirrors the world, which looks correct until
+  someone reads text in it. See `XRAPI_V0_4_DESC.md` section 6.
 - **Convert each pose independently of the head.** Share only the recentre
   origin.
 - **Freeze on the last good pose** when packets drop. Never zero.

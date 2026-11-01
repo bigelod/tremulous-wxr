@@ -55,8 +55,21 @@ def build_packet(t, frame_id, quat_scale, pressed=None):
     f = []
     for h in hands:
         f += h["q"] + h["stick"] + h["pos"]        # 0-8 left, 9-17 right
+    # Head position. This MOVES: with a static head the positional path
+    # reads as a correct [0 0 0] offset and looks verified when it has not
+    # been exercised at all. Each axis gets a different period so a swapped
+    # or sign-flipped axis cannot hide behind symmetry.
+    #   X: lean right/left, 0.15 m
+    #   Y: stand/crouch,    0.05 m about a 1.6 m eye height
+    #   Z: lean back/fore,  0.10 m  (-Z is forward in OpenXR)
+    head_pos = [
+        0.15 * math.sin(t * 0.70),
+        1.60 + 0.05 * math.sin(t * 0.90),
+        0.10 * math.sin(t * 0.40),
+    ]
+
     f += hmd_q                                      # 18-21
-    f += [0.0, 1.6, 0.0]                            # 22-24 head position
+    f += head_pos                                   # 22-24 head position
     f += [0.063]                                    # 25 IPD, metres
     f += [1.19, 1.19]                               # 26-27 FOV, tan half-angle
     f += [float(frame_id)]                          # 28 HMD_SYNC

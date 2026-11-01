@@ -22,6 +22,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // cl_cgame.c  -- client system interaction with client game
 
 #include "client.h"
+#include "../winlatorxr/xr_view.h"
+#include "../winlatorxr/xr_api.h"
 
 #ifdef USE_MUMBLE
 #include "libmumblelink.h"
@@ -575,7 +577,28 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		re.AddAdditiveLightToScene( VMA(1), VMF(2), VMF(3), VMF(4), VMF(5) );
 		return 0;
 	case CG_R_RENDERSCENE:
-		re.RenderScene( VMA(1) );
+		{
+			// Hook 1. cgame hands us the view it computed; we compose the
+			// head pose onto it before the renderer sees it. Engine-side, so
+			// it survives a pure server forcing its own cgame QVM.
+			//
+			// The refdef is copied out of VM memory rather than modified in
+			// place: cgame owns that struct and may read it again after the
+			// syscall returns.
+			//
+			// With VR off we hand the renderer cgame's own pointer, exactly
+			// as the stock engine does, so vr_enable 0 costs nothing at all
+			// -- not even the copy.
+			if ( XR_IsEnabled( ) ) {
+				refdef_t	vrRefdef;
+
+				vrRefdef = *(refdef_t *)VMA(1);
+				XR_AdjustRefdef( &vrRefdef, cl.viewangles[YAW] );
+				re.RenderScene( &vrRefdef );
+			} else {
+				re.RenderScene( VMA(1) );
+			}
+		}
 		return 0;
 	case CG_R_SETCOLOR:
 		re.SetColor( VMA(1) );

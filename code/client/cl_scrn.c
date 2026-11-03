@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // cl_scrn.c -- master for refresh, status bar, console, chat, notify, etc
 
 #include "client.h"
+#include "../winlatorxr/xr_sync.h"
 
 qboolean	scr_initialized;		// ready to draw
 
@@ -554,6 +555,11 @@ void SCR_UpdateScreen( void ) {
 		} else {
 			SCR_DrawScreenField( STEREO_CENTER );
 		}
+
+		// Stage 5. LAST, after the world and after the HUD, immediately
+		// before the buffer swap. Anything drawn after this overwrites the
+		// corner the runtime samples.
+		XR_DrawSyncPixel( );
 
 		if ( com_speeds->integer ) {
 			re.EndFrame( &time_frontend, &time_backend );

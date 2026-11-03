@@ -47,9 +47,9 @@ one piece that a renderer swap would force us to rewrite.
 | 0 | Feasibility assessed, intake complete, D1/D2 signed off | **Done** - 31 Oct 2026 |
 | 1 | Unmodified Tremulous runs in a container; OpenGL path characterised | **Deferred by decision, 31 Oct 2026.** Builds and runs on PC; not yet on device |
 | 2 | Our code loads, logs, build stamp, deploy guard | **Code complete, PC-verified.** CHECKPOINT 2 outstanding (device) |
-| 3 | Borderless window filling the display | Not started |
+| 3 | Borderless window filling the display | **Borderless done, PC-verified.** "Fills the display" is fullscreen's job on device; revisit if the container disagrees |
 | 4 | XrApi 0.5 client, device-verified button table | **Code complete, PC-verified.** CHECKPOINT 4 outstanding - needs one real device packet and a measured button table |
-| 5 | Sync pixel | Not started - renderer-coupled, **next action** |
+| 5 | Sync pixel | **Code complete, PC-verified by screenshot.** CHECKPOINT 5/6 outstanding (device) |
 | 6 | 6DOF head tracking feels locked | **Code complete, PC-verified** as a spawned rifle human. CHECKPOINT 6 outstanding (device) |
 | 7 | Presentation mode chosen and measured | Not started |
 | 8 | Controller input, owner-confirmed mapping | Not started |
@@ -206,17 +206,101 @@ documentation, not as a report of work done.
   presents as out-of-range pitch and impossible roll. `raw:` plus
   `drained 2 queued datagrams` is the tell. Run one source at a time.
 
+## Findings from stage 5, 1 November 2026
+
+- **The sync pixel lives in the CLIENT, before `re.EndFrame`.** The escape
+  hatch people reach for - the SDL layer - is not one here: `sdl_glimp.c` is
+  in `renderer_common.cmake`, so it is compiled into the renderer DLL along
+  with everything else, and with `USE_RENDERER_DLOPEN` on it cannot reach
+  `XR_GetState()` in the executable. But `re.EndFrame` is *called* from the
+  client, in `SCR_UpdateScreen` (`code/client/cl_scrn.c`), after the world
+  and the HUD. Drawing there with `re.DrawStretchPic` covers gl1 and gl2
+  with one implementation and keeps the client's symbols in scope.
+
+- **The 2D pass is in REAL PIXELS with y = 0 at the top.** `RB_SetGL2D` sets
+  `qglOrtho(0, vidWidth, vidHeight, 0, 0, 1)`, so `(0,0,10,10)` is exactly
+  the ten-by-ten the runtime wants. **Do not put these through
+  `SCR_AdjustFrom640`** - that converts from the virtual 640x480 space and
+  the widescreen correction would move the square off the sampled pixel.
+  This is also the precise shape of BUG_FIXES item 5: the prior attempt had
+  this same top-left ortho and still drew at `vidHeight-10`, the bottom.
+
+- **Red is passed through byte for byte - measured, not assumed.** Sending a
+  fixed `HMD_SYNC` of 12 renders as exactly `rgb(12,0,0)` at pixel (0,0). A
+  gamma-2.2 encode would have produced about 68, so there is no colour
+  management in the path and no reason to pre-correct. Green and blue are 0.
+  Verified by screenshot with `scripts/check_sync_pixel.py`, per the
+  instruction to check the corner rather than reason about the matrix.
+
+- **`vr_syncPixel` is an off switch**, so "is the camera wrong or is sync
+  wrong?" can be settled on the device by toggling one cvar rather than
+  shipping two builds. Swimmy-with and swimmy-without are different
+  diagnoses.
+
+## Findings from stage 3, 1 November 2026
+
+- **The engine already had borderless**, as `r_noborder` -> SDL_WINDOW_BORDERLESS
+  (`code/sdl/sdl_glimp.c`). What was missing was forcing it on for VR and
+  re-asserting it. `vr_borderless` (default 1) ORs into the mode-set call and
+  is re-checked in `GLimp_EndFrame`, which only calls
+  `SDL_SetWindowBordered` when the flag actually disagrees - so the common
+  case costs one flag read and no window-manager traffic.
+
+- **The renderer reaches VR settings through cvars, not symbols.**
+  `sdl_glimp.c` is in the renderer DLL and cannot link to `XR_IsEnabled()`,
+  but `ri.Cvar_Get` crosses the boundary, so `vr_enable` is simply read on
+  that side. Worth remembering for anything else that has to live down there.
+
+- **The deploy script's freshness guard was wrong, and the guard itself
+  caught it.** It compared every source against `tremulous.exe` alone, so a
+  renderer-only edit (`sdl_glimp.c` feeds only `renderer_opengl*.dll`)
+  tripped it even though the build was correct. A guard that fires when
+  nothing is wrong gets ignored, and then it is not a guard. It now compares
+  the newest source against the **newest build artifact**, which answers the
+  question that actually matters: did a build run since the last edit?
+
 ## Decisions taken 1 November 2026
 
-- **The HUD stays in VR.** Dropping to a flat 2D mode just to read the HUD
-  would be frustrating in normal play, and Tremulous's HUD carries
-  information the player needs continuously - health, ammo, credits, the
-  build menu. **`MODE_VR 0` is reserved for the main menu only, if it is
-  needed there at all**, and rendering even that in-world is worth
-  investigating rather than assumed impossible. This revises the D6 default
-  of "`MODE_VR 0` in menus" to "`MODE_VR 0` for the main menu at most", and
-  makes stage 9 a question about HUD *legibility and depth placement* rather
-  than about mode switching. Owner's call, 1 Nov 2026.
+- **The HUD stays in VR; the MENUS do not.** Revised on device the same day,
+  and the distinction turned out to be the whole point.
+
+  The HUD - health, ammo, credits, the build menu - is drawn by cgame over
+  the world and must stay in VR, because dropping to flat just to read it
+  would be constant and intolerable. Stage 9 is therefore about HUD
+  *legibility and depth placement*, not mode switching.
+
+  **Menus are the opposite.** `MODE_VR 1` from startup made the game
+  unusable before you were in it: the runtime takes the mouse and presents
+  immersively, so Tremulous's 2D menus could neither be clicked nor fitted
+  in view. The alternative is rebuilding every menu for VR, which is not a
+  trade worth making for a screen you pass through.
+
+  **Implemented as `vr_autoMode` (default 1):** `MODE_VR 1` only while
+  `clc.state == CA_ACTIVE` and the UI does not hold the key catcher;
+  `MODE_VR 0` otherwise. That covers the main menu, connecting, loading,
+  the in-game ESC menu, and - usefully, discovered rather than designed -
+  Tremulous's own team and class menus, which are UI menus and so get the
+  mouse back exactly when you need to pick a class.
+
+  Owner's call, 1 Nov 2026, superseding the earlier "main menu at most".
+
+- **No green debug square.** It was dropped. In HWXR that marker means "SBS
+  is on"; we are mono-only, so it signalled nothing, and "is sync drawing?"
+  is already a log line. Owner's call, 1 Nov 2026.
+
+- **The sync pixel draws on every presented frame, unconditionally** - over
+  the HUD, in the pause menu, in the main menu, and while `MODE_VR` is 0,
+  holding the last known value. Owner's call, 1 Nov 2026. Verified rather
+  than assumed: `re.EndFrame` is reached from exactly one place in the whole
+  client (`SCR_UpdateScreen`, two call sites), and `XR_DrawSyncPixel()`
+  precedes both, so there is no frame that escapes it. The last-value hold
+  falls out of never zeroing on a dropout.
+
+  **Known tension, for the device:** the runtime derives our frame rate by
+  counting changes in this value, so a held constant during `MODE_VR 0`
+  reads as a frozen game. That is harmless while the runtime is not tracking
+  us, but if anything misbehaves on re-entry to `MODE_VR 1`, this is the
+  first thing to suspect.
 
 ## Still open
 
@@ -228,7 +312,60 @@ documentation, not as a report of work done.
 
 ---
 
+## Fixed 1 November 2026 - the local-hosting crash
+
+**`sv_pure` hides every loose file in `base/`, and that one fact caused both
+the hosting crash and the broken UI.** Full write-up in `BUG_FIXES.md`
+part 4 items 4 and 5; the short version:
+
+- Hosting a game makes the client pure against its own server. `FS_FindVM`
+  and `FS_FOpenFileRead` then skip **all** directory search paths, so our
+  loose QVMs and loose 1.2 menus became unreadable. The UI VM failed to load
+  on its second creation (hosting clears the hunk) and the engine raised
+  `Com_Error( ERR_FATAL, "VM_Create on UI failed" )`.
+- **Fixed** by packing `assets/` plus the built QVMs into `zzz-wxr.pk3`,
+  staged by `deploy_wxr.ps1`. Named to sort last, because the alphabetically
+  last pk3 is searched first. Verified on the desktop against the deployed
+  folder: hosts and spawns, and menu parse errors went 401 -> 0.
+- **Also fixed:** `autoexec.cfg` was never staged at all, so `logfile 2`
+  never applied - which is why no `qconsole.log` ever came back from the
+  device, and why this crash went two builds without a diagnosis the engine
+  was printing the whole time.
+
+**Both earlier hypotheses were wrong and neither had actually been tested**
+(the Box64 JIT theory, and the `UI_GETCLIENTSTATE` NULL pointer), because the
+config that was supposed to test them never shipped. The `UI_GETCLIENTSTATE`
+guard stays as hardening; it is not the fix.
+
+**Method note worth keeping.** "The log is the only channel back" is a
+**Quest** constraint. This bug reproduced on the PC, and `cdb.exe` from the
+Windows SDK is already on this machine. When a device bug reproduces on the
+desktop, stop reading logs and attach a debugger.
+
+---
+
 ## Currently debugging
 
-Nothing. Stages 2 and 4 behave correctly against `scripts/xr_spoof.py`; the
-open items are all device observations that have not been made yet.
+Nothing. The local-hosting crash above is fixed and verified on the desktop,
+and shipped as **`Release/AlphaTest6`** (see that folder's `README.txt`). It
+has **not** yet been confirmed on the Quest, which is the next device run.
+
+Packing is now one script, `scripts/make_wxr_pk3.ps1 -Target <folder>`, so a
+folder staged by hand can be repaired without re-running the whole deploy.
+`Release/AlphaTest4` and `AlphaTest5` were deleted on 1 Nov 2026 (owner's
+call) once AlphaTest6 was verified; their write-ups are kept in
+`Release/_archive/`, and the reproduction no longer needs a folder - staging
+any build without the pk3 reproduces it.
+
+Also fixed while verifying AlphaTest6: `vr.log` was written to the working
+directory rather than beside the executable (`BUG_FIXES.md` part 4 item 6).
+
+**One known, unrelated defect left over from that session**, recorded so it
+is not mistaken for a regression: 26 `failed to parse
+models/weapons/*/animation.cfg` errors. Those files exist in neither
+`assets/` nor `data-1.1.0.pk3`, and the count is identical pure and non-pure,
+so this is a pre-existing 1.1.0-data-against-1.2-code content gap, not a
+purity or VR issue. Non-fatal - console spam only.
+
+Stages 2 and 4 behave correctly against `scripts/xr_spoof.py`; the remaining
+open items are device observations that have not been made yet.

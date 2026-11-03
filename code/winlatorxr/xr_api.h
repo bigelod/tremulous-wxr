@@ -97,6 +97,12 @@ const xr_state_t *XR_GetState( void );
 
 qboolean        XR_IsEnabled( void );
 
+// Tell the transport whether the player is actually PLAYING, as opposed to
+// sitting in a menu, connecting or loading. Drives MODE_VR: the runtime owns
+// the mouse and presents a flat panel at MODE_VR 0, which is the only way a
+// 2D menu built for a monitor stays usable in a headset.
+void            XR_NoteGameState( qboolean inGame );
+
 // Button helper. Bounds-checked, so an index past the end of a short bool
 // string reads as not-pressed rather than running off the buffer.
 qboolean        XR_Button( int index );

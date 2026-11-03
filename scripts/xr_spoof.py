@@ -90,6 +90,10 @@ def main():
                     help="multiply quaternions by this; 1.054 is 5.4%% long")
     ap.add_argument("--malformed", action="store_true",
                     help="inject junk packets to prove they are rejected")
+    ap.add_argument("--sync-fixed", type=int, default=None,
+                    help="send this HMD_SYNC every frame instead of a ramp. "
+                         "Used to prove the rendered red is the value sent, "
+                         "byte for byte, with no gamma or rescale applied.")
     args = ap.parse_args()
 
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -118,7 +122,10 @@ def main():
     # 256/12 + 1 distinct red values and calibrates to them.
     while time.time() - start < args.seconds:
         t = time.time() - start
-        sync = (frame * 12) % 256
+        if args.sync_fixed is not None:
+            sync = args.sync_fixed
+        else:
+            sync = (frame * 12) % 256
 
         if args.malformed and frame % 180 == 179:
             tx.sendto(b"client0 not a packet at all\n", ("127.0.0.1", PORT_IN))

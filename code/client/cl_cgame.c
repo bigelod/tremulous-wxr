@@ -593,6 +593,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 				refdef_t	vrRefdef;
 
 				vrRefdef = *(refdef_t *)VMA(1);
+				XR_NoteViewheight( cl.snap.ps.viewheight );
 				XR_AdjustRefdef( &vrRefdef, cl.viewangles[YAW] );
 				re.RenderScene( &vrRefdef );
 			} else {

@@ -244,6 +244,260 @@ about the design, and belongs in `PROJECT_PLAN.md` instead.
 
 ## Part 4: this project's own fixes
 
-*(Empty. First entry when the first bug is found on hardware. Format: what
-was observed, on what build stamp, what the log said, what the cause was,
-what changed, and who confirmed it was gone.)*
+### 1. The UDP socket never opened on device - WSANOTINITIALISED
+
+**Observed:** Quest 3, build stamp `Nov 1 2026 14:44:46`, first device run.
+`vr.log` carried one line:
+
+```
+socket: FAILED to create UDP socket (error 10093)
+```
+
+10093 is `WSANOTINITIALISED`. No pose ever arrived, so head tracking and the
+sync pixel were both dead - though the handshake, the `system` read and the
+renderer report all worked, which is why the rest of the log looks healthy.
+
+**The tell that located it:** the very next line is
+`out: 0 0 1 0 104.5 104.5`, which is only logged *after* `socket()` succeeds
+inside `XR_SendOut`. So a socket created one frame later worked. Winsock was
+therefore being initialised by somebody, just not before `XR_Init`.
+
+**Cause.** `code/sys/sys_main.c:882` calls `NET_Init()` - which is where the
+engine's `WSAStartup` lives - **after** `Com_Init()`. `Com_Init` is what
+calls `CL_Init`, which is what calls `XR_Init`. So our socket is *always*
+created before the engine starts Winsock. This was never device-specific:
+on the desktop something else in the process (SDL or wininet) had already
+called `WSAStartup`, so it worked by luck and hid the defect through every
+PC test.
+
+**Fixed by** calling `WSAStartup` ourselves in `XR_Init` - it is reference
+counted per process, so this is safe alongside the engine's call provided we
+`WSACleanup` once - and by retrying the bind every 2 s from `XR_Frame`
+rather than giving up for the session.
+
+**Note on the inherited material.** `docs/MetaAI/BUG_FIXES.md` had a
+`WSAStartup` entry, and part 3 above correctly rejects its stated reason
+(it claims thread affinity; `WSAStartup` is per-process). But the instinct
+behind it was right, and discarding the entry along with its wrong
+explanation is how this defect got written. **A bad reason for a real
+precaution is still a signal.**
+
+**Confirmed gone:** not yet. Awaiting the next device run - on PC the log
+now reads `winsock: WSAStartup ok`, but PC never reproduced the failure, so
+PC cannot confirm the fix.
+
+### 2. Borderless re-applied every frame (precaution, not a confirmed defect)
+
+`GLimp_EndFrame` re-asserted the borderless flag whenever
+`SDL_GetWindowFlags` did not report `SDL_WINDOW_BORDERLESS`. That flag has
+no obligation to round-trip under Wine, and if it does not, the result is
+`SDL_SetWindowBordered` on every frame inside two translation layers.
+
+Changed to ask once per window pointer, which still satisfies "re-apply
+because engines rebuild windows" - a rebuilt window is a new pointer.
+
+**Status: suspected contributor to the hosting crash, unconfirmed.** Listed
+here so that if the crash persists, this has already been ruled out rather
+than being discovered as a red herring later.
+
+### 3. NULL pointer write in UI_GETCLIENTSTATE during level load
+
+**Observed:** Quest 3, build stamp `Nov 1 2026 15:39:12` (AlphaTest4),
+running in **bytecode** VM mode. Crashed every time a level started
+loading; menus, server browser and create-server screens were all fine.
+Crashed identically with `vr_enable 0`, so never a VR defect.
+
+**What the WinlatorXR log gave us:**
+
+```
+wine: Unhandled page fault on write access to 0000000000000004
+      at address 0000000140036257
+```
+
+**How it was located, which is worth repeating:**
+
+1. Wine logged `WINEPRELOADRESERVE="140000000-1400b2000"` for
+   `tremulous.exe`, and `dumpbin /HEADERS` confirms our image base is
+   `140000000`. So the fault address is **RVA 0x36257 in our own binary** -
+   not a renderer DLL, not JIT-generated code.
+2. `dumpbin /DISASM` at that address shows `mov dword ptr [rbx+4],eax`
+   preceded by the inlined body of `VM_ArgPtr` - the `VMA()` macro - with
+   both of its NULL exits (`args[n] == 0`, and `currentVM == NULL`).
+3. Relinking with `/MAP` resolved it to `CL_UISystemCalls + 0x13C7`. The
+   relink produced a different file hash, so the map was only trusted after
+   disassembling the **new** binary at the same RVA and confirming the
+   instructions were identical.
+4. The write pattern - offset 4, then offset 0, then a 1024-byte copy at
+   offset 0xC - matches `GetClientState()` field for field
+   (`connectPacketCount`, `connState`, `servername`).
+
+**Cause.** `case UI_GETCLIENTSTATE: GetClientState( VMA(1) );` in
+`code/client/cl_ui.c` writes through the VM pointer with no NULL check, and
+on device `VMA(1)` resolved to NULL. The UI polls this while drawing the
+connection screen, which is exactly when a level loads.
+
+**Fixed by** checking the pointer, logging once, and returning. A stale
+struct for one frame is invisible; a page fault is not. The log also prints
+the raw VM argument, because `VMA()` yields NULL for two quite different
+reasons and the argument tells them apart: `0` means the QVM really passed
+NULL, non-zero means the engine lost `currentVM` under the syscall - which
+would be the more serious finding, since every other `VMA()` in that window
+would be NULL too.
+
+**Confirmed gone:** not yet. Awaiting the next device run.
+
+**Hypothesis that was wrong, recorded so it is not retried.** Before this
+log arrived, the suspect was the QVM JIT: `vm_*` defaults to 2, `vm_x86.c`
+generates x86-64 at runtime, and Box64's dynarec has to translate code that
+did not exist at process start. It fitted the symptom - menus use the small
+`ui.qvm`, level load brings in the much larger `game.qvm` and `cgame.qvm`.
+**It was wrong.** AlphaTest4 ran in bytecode mode, which generates no code
+at all, and crashed identically. The lesson is the ordinary one: the
+hypothesis was plausible and cost a round trip, while the fault address
+settled it in minutes. Ask for the crash address first.
+
+**Logging gap this exposed:** nothing recorded which VM mode actually ran,
+so "did autoexec.cfg take effect?" could not be answered from the logs. The
+`vm:` line now in `vr.log` closes that.
+
+### 4. Hosting a local game crashed: `VM_Create on UI failed` (sv_pure hides every loose file)
+
+**Status: root cause found, fixed, and verified on the desktop.** This
+supersedes the "Open: crash when hosting a local game" entry that stood here,
+including its claim that the crash did not reproduce on PC. It reproduces
+every time.
+
+**Observed:** AlphaTest5, on the owner's PC, 1 Nov 2026. Main menu ->
+Create Server -> level select -> loading -> crash. The owner also reported
+the UI itself was "totally broken" on the way through.
+
+**What it actually is - one root cause, two symptoms.** `sv_pure` defaults
+to `1` (`code/server/sv_init.c:642`), so the instant you host a game the
+client goes pure **against its own server**. A pure client can only read
+files that live *inside a pk3*. `FS_FindVM` says so outright:
+
+```c
+if(search->dir && !fs_numServerPaks)        // code/qcommon/files.c
+```
+
+Every directory search path - including `base/` itself - is skipped whole.
+And we shipped our 1.2 content as **loose files**: the QVMs in `base/vm/`,
+the menus and models under `base/` from `assets/`. So:
+
+1. **The crash.** `vm/ui.qvm` became unfindable, `FS_FindVM` returned `-1`,
+   `VM_Create` returned `NULL` at its `if(retval < 0)` exit, and `CL_InitUI`
+   raised `Com_Error( ERR_FATAL, "VM_Create on UI failed" )`. This happens on
+   the *second* UI VM creation: hosting clears the hunk and frees the UI VM,
+   then `CL_StartHunkUsers` rebuilds it - by which time the client is pure.
+   That is why the menus work and only hosting dies.
+
+2. **The broken UI.** The loose `ui/*.menu` files went invisible too, so our
+   1.2 `ui.qvm` fell back to the **1.1.0** menus inside `data-1.1.0.pk3` and
+   could not parse them. Measured: **0** parse errors when not pure, **401**
+   when pure. Same cause as the crash, which is why fixing one fixed both.
+
+**Fixed by** packing `assets/` *and* the built QVMs into a single pk3,
+`zzz-wxr.pk3`, staged into `base/` by `scripts/deploy_wxr.ps1`. The name has
+to sort last: `FS_AddGameDirectory` adds pk3s in ascending order and prepends
+each to the search path, so the alphabetically **last** pk3 is searched
+**first**. The engine's own `FS_Startup` listing confirms the ordering
+(`map-uncreation` first, `data-1.1.0` last).
+
+The loose copies are still staged as well. They cost nothing, they win while
+the client is not pure, and they keep asset iteration a file copy rather than
+a repack. Both are generated from the same source on every deploy, so they
+cannot drift.
+
+This does **not** affect joining real servers: a pure server forces its own
+pk3s and QVMs onto us regardless of what we ship.
+
+**Verified, on the desktop, against the deployed folder** - not reasoned:
+
+| | crash | menu parse errors |
+|---|---|---|
+| loose only, `sv_pure 1` (as shipped) | `VM_Create on UI failed` | 401 |
+| loose only, `sv_pure 0` | none, spawns | 0 |
+| `zzz-wxr.pk3`, `sv_pure 1` (the fix) | none, spawns | 0 |
+
+The fixed run loads `vm/ui.qvm` and `vm/cgame.qvm` from `zzz-wxr.pk3` and
+reaches "entered the game".
+
+**Two prior hypotheses were wrong, and neither was ever actually tested.**
+
+* **The Box64/JIT theory (AlphaTest4).** Wrong, and worse, untested - see
+  the autoexec defect below. `autogen.cfg` still read `vm_* "2"`, the JIT.
+  The bytecode run that supposedly cleared the JIT never happened.
+* **The `UI_GETCLIENTSTATE` NULL pointer (item 3 above).** Also not the root
+  cause. The fatal path on the desktop is a clean `Com_Error`, not a page
+  fault, and the NULL guard alone would have changed nothing: the UI VM still
+  would not have loaded. **Keep the guard** - it is correct hardening, and a
+  pure-client failure plausibly leaves `uivm` in exactly the state that
+  produces it under Wine - but stop crediting it with fixing this.
+
+**How it was found, which is the transferable part.** The owner reported it
+reproduced *on the PC*. That single fact retired the whole Box64/dynarec
+branch and, more importantly, meant a debugger was available: `cdb.exe` ships
+with the Windows SDK and is already on this machine. The project's "the log is
+the only channel back" rule is a Quest constraint, **not a PC one** - when a
+device bug reproduces on the desktop, stop reading logs and attach. Diagnosis
+took minutes after that, and `VM_Create`'s single `NULL` return made the
+filesystem the only possible culprit without needing to run anything.
+
+### 5. `autoexec.cfg` was never deployed, so no device config ever applied
+
+**Observed:** `couldn't exec autoexec.cfg` in the engine console log.
+
+`scripts/autoexec_alphatest.cfg` existed, and `scripts/deploy_wxr.ps1` never
+staged it. `Com_ExecuteCfg` execs `base/autoexec.cfg`; nothing was there.
+
+Everything that file was supposed to guarantee therefore never happened on
+the headset:
+
+* `logfile 2` never applied - **which is why no `qconsole.log` ever came
+  back**, and why the local-hosting crash had "no diagnosis and no log that
+  could supply one" for two builds. The engine was printing
+  `VM_Create on UI failed` the whole time and nobody could see it.
+* AlphaTest4's `vm_* 1` never applied. `autogen.cfg` still read `vm_* "2"`.
+  The bytecode experiment was never run.
+* `vr_enable 1` / `vr_verbose 1` happened to be set anyway, because they are
+  `seta` and were already saved in the device's `autogen.cfg`. That is what
+  hid the problem: VR came up, so the config looked like it had worked.
+
+**Fixed by** staging `scripts/autoexec_alphatest.cfg` to
+`$Dest/base/autoexec.cfg` in `deploy_wxr.ps1`, and warning loudly if the
+source file is missing. Verified: a run with a fresh, empty `fs_homepath`
+starts the XrApi client, which only `autoexec.cfg` could have turned on.
+
+**The general lesson, and it is the expensive one.** A config file that is
+written but not shipped is worse than no config file: it makes a test look
+conducted when it was not. Two device round trips were spent on a hypothesis
+that the test run could not possibly have evaluated. If a build is supposed
+to change a setting, the build must *prove* the setting changed - which is
+what the `vm:` line in `vr.log` now does, and it should have existed first.
+
+### 6. `vr.log` was written to the working directory, not beside the executable
+
+**Observed** while verifying AlphaTest6: `vr.log` appeared in the shell's
+current directory, and `CLAUDE.md`, `XR_Log`'s own comment and the deploy
+script's reminder all said "next to the executable".
+
+`XR_Init` called `fopen( "vr.log", "w" )`, which is relative to the **working
+directory**. That happens to be the executable's folder when you double-click
+it, which is why it was never noticed - but a shortcut with a "start in"
+folder set, or any launch from elsewhere, silently wrote the log somewhere
+nobody would look. `Release/` holds exactly such shortcuts.
+
+**Fixed by** anchoring the path to `fs_basepath`, which defaults to
+`DEFAULT_BASEDIR` -> `Sys_BinaryPath()`. `XR_Init` now also prints
+`XR: vr.log -> <path>` to the engine log, so the two logs that are always
+requested as a pair identify each other.
+
+**Verified** by launching from an unrelated working directory: no `vr.log`
+there, and one in the game folder with the resolved path confirmed in
+`qconsole.log`.
+
+**Why this was worth fixing immediately rather than filing.** `vr.log` is the
+project's only channel back off the device. A diagnostic channel that lands in
+an unpredictable place costs exactly the manual round trip the whole logging
+discipline exists to avoid, and it fails *silently* - the engine log still
+says the XrApi client started.

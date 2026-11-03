@@ -95,19 +95,34 @@ $newestSource = Get-ChildItem (Join-Path $RepoRoot 'code') -Recurse -Include *.c
                 Sort-Object LastWriteTime -Descending |
                 Select-Object -First 1
 
-$binaryTime = (Get-Item $clientExe).LastWriteTime
+# Compare against the NEWEST build artifact, not against tremulous.exe alone.
+#
+# sdl_glimp.c and the renderer sources only feed renderer_opengl*.dll, so a
+# renderer-only edit legitimately leaves the client exe untouched and an
+# exe-only check cries wolf. A guard that fires when nothing is wrong gets
+# ignored, and then it is not a guard. The question that actually matters is
+# "did a build run since the last source edit?", which the newest artifact
+# answers.
+$artifacts = @(
+    Get-ChildItem $StageSrc -Filter *.exe -ErrorAction SilentlyContinue
+    Get-ChildItem $StageSrc -Filter *.dll -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path $StageSrc 'base') -Filter *.dll -ErrorAction SilentlyContinue
+) | Sort-Object LastWriteTime -Descending
+
+$newestArtifact = $artifacts | Select-Object -First 1
+$binaryTime = $newestArtifact.LastWriteTime
 
 if ($newestSource -and $newestSource.LastWriteTime -gt $binaryTime) {
     Write-Host ''
-    Write-Host 'REFUSING TO STAGE: the binary is older than the source.' -ForegroundColor Red
-    Write-Host "  tremulous.exe   $binaryTime"
+    Write-Host 'REFUSING TO STAGE: every binary is older than the newest source.' -ForegroundColor Red
+    Write-Host "  newest binary   $binaryTime  $($newestArtifact.Name)"
     Write-Host "  newest source   $($newestSource.LastWriteTime)  $($newestSource.FullName)"
     Write-Host ''
     Write-Host 'Build again, or re-run without -SkipBuild.' -ForegroundColor Yellow
     exit 1
 }
 
-Write-Host "Binary is newer than all sources (built $binaryTime)." -ForegroundColor Green
+Write-Host "Build is newer than all sources (newest artifact $($newestArtifact.Name), $binaryTime)." -ForegroundColor Green
 
 # --------------------------------------------------------------------- stage
 
@@ -138,11 +153,54 @@ foreach ($qvm in Get-ChildItem (Join-Path $StageSrc 'base/vm') -Filter *.qvm -Er
     Stage-File $qvm.FullName "$Dest/base/vm"
 }
 
-# Loose game assets. These sit at the head of the engine's search path and so
-# override the 1.1.0 pk3s -- which is the point: they are the 1.2 successor to
-# data-gpp1.pk3, and they must win over the stale copies inside data-1.1.0.pk3.
+# Loose game assets and loose QVMs. While the client is NOT pure the base/
+# directory sits at the head of the search path, so these win over the stale
+# copies inside data-1.1.0.pk3, and editing one is visible on the next run
+# without repacking anything. That is worth keeping for iteration.
+#
+# But they are only half the story -- see the pk3 built below.
 Copy-Item (Join-Path $RepoRoot 'assets/*') -Destination "$Dest/base" -Recurse -Force
 Write-Host 'Staged loose assets/ over base/.' -ForegroundColor DarkGray
+
+# ------------------------------------------------------- the pk3 that matters
+#
+# Everything staged above is INVISIBLE to a pure client, and hosting a game
+# makes the client pure against its own server. That one fact is what crashed
+# AlphaTest5 with "VM_Create on UI failed" and broke its UI at the same time.
+#
+# The full explanation, and the packing itself, live in make_wxr_pk3.ps1 --
+# one copy, so a folder staged by hand can be repaired with the same script:
+#
+#     ./scripts/make_wxr_pk3.ps1 -Target Release/AlphaTest5
+#
+# It is deliberately run AFTER the loose staging above, because it packs the
+# target folder's own base/ subdirectories.
+
+$pk3Name = 'zzz-wxr.pk3'
+
+& (Join-Path $PSScriptRoot 'make_wxr_pk3.ps1') -Target $Dest -Pk3Name $pk3Name
+if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw 'Packing the pk3 failed.' }
+
+$staged.Add((Join-Path "$Dest/base" $pk3Name))
+
+# ------------------------------------------------------------------- autoexec
+#
+# Com_ExecuteCfg execs base/autoexec.cfg, and it was never staged -- the
+# device log said "couldn't exec autoexec.cfg". Every default this file was
+# supposed to carry therefore never applied on the headset, including
+# AlphaTest4's bytecode-VM experiment (autogen.cfg still had vm_* "2", the
+# JIT) and AlphaTest5's `logfile 2`, which is why no qconsole.log ever came
+# back. A config that is written but not shipped is worse than no config:
+# it makes a test look conducted when it was not.
+
+$autoexec = Join-Path $RepoRoot 'scripts/autoexec_alphatest.cfg'
+if (Test-Path $autoexec) {
+    Copy-Item $autoexec -Destination "$Dest/base/autoexec.cfg" -Force
+    $staged.Add((Join-Path "$Dest/base" 'autoexec.cfg'))
+    Write-Host 'Staged scripts/autoexec_alphatest.cfg -> base/autoexec.cfg.' -ForegroundColor Green
+} else {
+    Write-Warning "No autoexec at $autoexec (device will print 'couldn't exec autoexec.cfg')"
+}
 
 # Game data. Big and unchanging, so only once.
 if (Test-Path $GameData) {
@@ -175,6 +233,9 @@ foreach ($file in $staged) {
 
 Write-Host ''
 Write-Host 'Reminders:' -ForegroundColor Yellow
-Write-Host '  * vr_enable defaults to 0. Set it to 1 to start the XrApi client.'
-Write-Host '  * A q3config.cfg already on the test device overrides changed defaults.'
+Write-Host '  * vr_enable defaults to 0; base/autoexec.cfg now sets it to 1 on the device.'
+Write-Host '  * A q3config.cfg/autogen.cfg already on the device overrides changed defaults.'
+Write-Host "  * $pk3Name carries assets/ AND the QVMs. Hosting a game makes the client"
+Write-Host '    pure, and a pure client can ONLY read files inside a pk3. If you add'
+Write-Host '    content and it works flat but vanishes when you host, it is this.'
 Write-Host '  * vr.log is written next to the executable; line 1 is the build stamp.'

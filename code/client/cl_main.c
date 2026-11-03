@@ -3199,6 +3199,13 @@ void CL_Frame ( int msec ) {
 		return;
 	}
 
+	// VR presentation follows the game state: immersive only while actually
+	// playing. KEYCATCH_UI covers the in-game ESC menu, which is as
+	// mouse-driven as the main menu is.
+	XR_NoteGameState( ( clc.state == CA_ACTIVE
+						&& !( Key_GetCatcher( ) & KEYCATCH_UI ) )
+					  ? qtrue : qfalse );
+
 	XR_Frame( );
 
 	// We may have a download prompt ready

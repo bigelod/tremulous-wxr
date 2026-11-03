@@ -42,6 +42,7 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 
 #include "xr_api.h"
 #include "xr_view.h"
+#include "xr_sync.h"
 #include "../qcommon/qcommon.h"
 
 #ifdef _WIN32
@@ -83,11 +84,16 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 #define XR_HANDSHAKE_RETRY_MS   2000
 // Dump one raw packet this often under vr_verbose.
 #define XR_RAWLOG_INTERVAL_MS   5000
+// Treat the stream as stopped after this long with nothing arriving.
+#define XR_STREAM_TIMEOUT_MS    1000
+// Retry a failed bind this often rather than dying silently for the session.
+#define XR_SOCKET_RETRY_MS      2000
 
 static cvar_t   *vr_enable;
 static cvar_t   *vr_verbose;
 static cvar_t   *vr_modeVR;
 static cvar_t   *vr_mode3D;
+static cvar_t   *vr_autoMode;
 static cvar_t   *vr_fovX;
 static cvar_t   *vr_fovY;
 
@@ -95,7 +101,11 @@ static xr_state_t   xr;
 
 static xr_socket_t  xr_sock = XR_INVALID_SOCKET;
 static qboolean     xr_initialised = qfalse;
-static qboolean     xr_sockReady = qfalse;
+static qboolean     xr_sockReady;
+static int          xr_sockRetryAt;
+#ifdef _WIN32
+static qboolean     xr_wsaStarted;
+#endif
 
 static char         xr_dir[MAX_OSPATH];
 static int          xr_lastHandshake;
@@ -105,6 +115,18 @@ static int          xr_lastRawLog;
 // diagnostic, but it is the number that tells a tester capture apart from a
 // device one -- real packets are unit to about 1e-4.
 static float        xr_lastQuatLen;
+
+// Transition tracking. The plan is explicit that the log should carry state
+// CHANGES rather than per-frame state -- a log the owner has to scroll is a
+// log that gets skimmed.
+static qboolean     xr_streaming;           // are packets currently arriving?
+static int          xr_streamStoppedAt;
+static char         xr_lastBools[XR_MAX_BOOLS + 1];
+static char         xr_lastOutbound[128];
+
+// Is the player actually playing, rather than in a menu / connecting /
+// loading? Fed from the client each frame.
+static qboolean     xr_inGame;
 
 static FILE        *xr_logFile;
 
@@ -152,8 +174,9 @@ static void XR_TrimTrailing( char *s )
 ==================
 XR_Log
 
-vr.log, next to the executable, flushed every line. A crash that loses the
-last line loses the one line that mattered.
+vr.log, in fs_basepath (the executable's own directory unless overridden),
+flushed every line. A crash that loses the last line loses the one line that
+mattered. XR_Init prints the resolved path to the engine log.
 ==================
 */
 void QDECL XR_Log( const char *fmt, ... )
@@ -460,6 +483,47 @@ With a protocol whose characteristic failure is total silence, an unchecked
 bind is a diagnostic dead end. Check both, and say which one failed.
 ==================
 */
+/*
+==================
+XR_InitWinsock
+
+**[device - Quest 3, 1 Nov 2026]** Without this, socket() fails with 10093,
+WSANOTINITIALISED, and the whole inbound stream never exists.
+
+The engine does call WSAStartup -- in NET_Init -- but sys_main.c calls
+NET_Init AFTER Com_Init, and Com_Init is what calls CL_Init and therefore
+XR_Init. So our socket is always created before the engine initialises
+Winsock. On a desktop this happened to work because something else in the
+process (SDL or wininet) had already started Winsock; inside the container
+nothing had, and the failure was total and silent apart from this one logged
+line.
+
+WSAStartup is reference counted per process, so calling it in addition to the
+engine's call is safe provided we WSACleanup exactly once.
+==================
+*/
+static void XR_InitWinsock( void )
+{
+#ifdef _WIN32
+	WSADATA wsaData;
+	int     err;
+
+	if ( xr_wsaStarted ) {
+		return;
+	}
+
+	err = WSAStartup( MAKEWORD( 2, 2 ), &wsaData );
+	if ( err != 0 ) {
+		XR_Log( "winsock: WSAStartup FAILED (%d) -- no UDP is possible", err );
+		return;
+	}
+
+	xr_wsaStarted = qtrue;
+	XR_Log( "winsock: WSAStartup ok (we call this ourselves because "
+			"NET_Init runs after CL_Init)" );
+#endif
+}
+
 static qboolean XR_OpenSocket( void )
 {
 	struct sockaddr_in  addr;
@@ -628,6 +692,25 @@ static qboolean XR_ParsePacket( const char *buf )
 		XR_TrimTrailing( xr.hmdName );
 	}
 
+	// The bool string ON EVERY CHANGE, not on a timer. This is what makes
+	// the button table buildable: the owner presses each control in turn and
+	// reads off which index moved. Sampling it every few seconds instead
+	// would miss most presses and make the exercise worthless.
+	if ( vr_verbose->integer && strcmp( bools, xr_lastBools ) != 0 ) {
+		Q_strncpyz( xr_lastBools, bools, sizeof( xr_lastBools ) );
+		XR_Log( "bools: %s", bools );
+	}
+
+	if ( !xr_streaming ) {
+		xr_streaming = qtrue;
+		if ( xr.packetsReceived > 0 ) {
+			XR_Log( "packets: RESUMED after %d ms",
+					Sys_Milliseconds() - xr_streamStoppedAt );
+		} else {
+			XR_Log( "packets: started (first pose from \"%s\")", xr.hmdName );
+		}
+	}
+
 	xr.valid = qtrue;
 	xr.packetsReceived++;
 	xr.lastPacketTime = Sys_Milliseconds();
@@ -733,6 +816,7 @@ static void XR_SendOut( void )
 	struct sockaddr_in  addr;
 	char                msg[128];
 	xr_socket_t         s;
+	int                 modeVR;
 
 	s = socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
 	if ( s == XR_INVALID_SOCKET ) {
@@ -748,11 +832,39 @@ static void XR_SendOut( void )
 	// only when greater than zero, so a 0 here leaves the previous haptic
 	// level in place rather than clearing it -- that is the documented
 	// behaviour, not a bug to work around.
+	// MODE_VR follows the game state.
+	//
+	// **[device - Quest 3, 1 Nov 2026]** Holding MODE_VR 1 from startup makes
+	// the game unusable before you are in it: the runtime takes the mouse and
+	// presents immersively, so the menus cannot be clicked and do not fit in
+	// view. Tremulous's menus are a 2D layout built for a monitor, and the
+	// alternative to this is rebuilding all of them for VR.
+	//
+	// MODE_VR 0 hands the mouse back and drops the frame to a flat panel,
+	// which is exactly what a menu wants. The cost is that the runtime stops
+	// sending poses entirely -- hence holding the last good pose across the
+	// gap, and hence still sending this packet every frame, because the mode
+	// is only ever re-read from a packet we send.
+	modeVR = vr_modeVR->integer;
+
+	if ( vr_autoMode->integer && !xr_inGame ) {
+		modeVR = XR_MODE_VR_OFF;
+	}
+
 	Com_sprintf( msg, sizeof( msg ), "0 0 %d %d %.1f %.1f",
-				 vr_modeVR->integer,
+				 modeVR,
 				 vr_mode3D->integer,
 				 vr_fovX->value,
 				 vr_fovY->value );
+
+	// Logged when it CHANGES, which is exactly when a MODE_VR or MODE_3D
+	// switch or an FOV tweak happened. Logging it every frame would bury
+	// everything else; never logging it at all leaves "what did we actually
+	// ask the runtime for?" unanswerable from a device report.
+	if ( strcmp( msg, xr_lastOutbound ) != 0 ) {
+		Q_strncpyz( xr_lastOutbound, msg, sizeof( xr_lastOutbound ) );
+		XR_Log( "out: %s   (haptL haptR MODE_VR MODE_3D fovX fovY)", msg );
+	}
 
 	sendto( s, msg, (int)strlen( msg ), 0,
 			(struct sockaddr *)&addr, sizeof( addr ) );
@@ -773,6 +885,10 @@ void XR_Init( void )
 	vr_modeVR  = Cvar_Get( "vr_modeVR",  "1", CVAR_ARCHIVE );
 	vr_mode3D  = Cvar_Get( "vr_mode3D",  "0", CVAR_ARCHIVE );
 
+	// Enter VR only once actually playing. Set 0 to force MODE_VR at all
+	// times, which is useful for testing and unusable for playing.
+	vr_autoMode = Cvar_Get( "vr_autoMode", "1", CVAR_ARCHIVE );
+
 	// Degrees. Tuning values, not a unit conversion to get right -- send a
 	// pair, look through the headset, adjust. Archived, so they can be
 	// changed on the device through q3config.cfg or the console without a
@@ -785,15 +901,39 @@ void XR_Init( void )
 	// already enabled the thing is a setting they cannot find, and vr_enable
 	// is CVAR_LATCH -- it needs setting and then a restart.
 	XR_ViewInit( );
+	XR_SyncInit( );
 
 	if ( !vr_enable->integer ) {
 		return;
 	}
 
-	xr_logFile = fopen( "vr.log", "w" );
-	if ( !xr_logFile ) {
-		Com_Printf( "WARNING: XR: could not open vr.log -- "
-					"there is no other channel back, so this is serious\n" );
+	// Anchored to fs_basepath, which defaults to the executable's own
+	// directory (DEFAULT_BASEDIR -> Sys_BinaryPath). A bare fopen( "vr.log" )
+	// is relative to the WORKING directory, so launching through a shortcut
+	// with a "start in" folder set -- or from a shell sitting anywhere else --
+	// silently wrote the log somewhere nobody would look. For the one channel
+	// back off the device, "probably in the right place" is not good enough.
+	{
+		const char  *base = Cvar_VariableString( "fs_basepath" );
+		char        path[MAX_OSPATH];
+
+		if ( base && base[0] ) {
+			Com_sprintf( path, sizeof( path ), "%s%c%s",
+						 base, PATH_SEP, "vr.log" );
+		} else {
+			Q_strncpyz( path, "vr.log", sizeof( path ) );
+		}
+
+		xr_logFile = fopen( path, "w" );
+		if ( !xr_logFile ) {
+			Com_Printf( "WARNING: XR: could not open %s -- "
+						"there is no other channel back, so this is "
+						"serious\n", path );
+		} else {
+			// Where it actually went, in the engine log. The two logs are
+			// requested as a pair and this is what pairs them up.
+			Com_Printf( "XR: vr.log -> %s\n", path );
+		}
 	}
 
 	// Line 1, always. "Am I running the binary I just built?" is answered
@@ -816,6 +956,7 @@ void XR_Init( void )
 
 	XR_Log( "hmd: %s / %s", xr_hmdMake, xr_hmdModel );
 
+	XR_InitWinsock( );
 	xr_sockReady = XR_OpenSocket();
 	xr_lastHandshake = Sys_Milliseconds();
 
@@ -837,6 +978,20 @@ void XR_Frame( void )
 		return;
 	}
 
+	// Retry the bind if it has not come up. Transport failures here are
+	// fatal to everything downstream and the characteristic symptom is total
+	// silence, so it is worth re-attempting rather than giving up in Init
+	// and leaving the port dead for the whole session.
+	if ( !xr_sockReady ) {
+		int retryNow = Sys_Milliseconds();
+
+		if ( retryNow - xr_sockRetryAt >= XR_SOCKET_RETRY_MS ) {
+			xr_sockRetryAt = retryNow;
+			XR_InitWinsock( );
+			xr_sockReady = XR_OpenSocket();
+		}
+	}
+
 	if ( xr_sockReady ) {
 		XR_Receive();
 	}
@@ -847,6 +1002,19 @@ void XR_Frame( void )
 	// from it, our handshake may simply have been deleted -- rewrite it
 	// rather than waiting forever for a reply to a file that is gone.
 	now = Sys_Milliseconds();
+
+	// Packets stopping is the characteristic failure of this protocol, and
+	// it is invisible otherwise: we hold the last good pose, so the view
+	// simply freezes and looks like a hang rather than a dropout. Say so.
+	if ( xr_streaming && xr.valid
+		 && now - xr.lastPacketTime >= XR_STREAM_TIMEOUT_MS ) {
+		xr_streaming = qfalse;
+		xr_streamStoppedAt = now;
+		XR_Log( "packets: STOPPED after %d received "
+				"(holding last pose; MODE_VR 0 does this deliberately)",
+				xr.packetsReceived );
+	}
+
 	if ( !xr.valid && now - xr_lastHandshake >= XR_HANDSHAKE_RETRY_MS ) {
 		xr_lastHandshake = now;
 		XR_WriteHandshake();
@@ -880,6 +1048,13 @@ void XR_Shutdown( void )
 	XR_DeleteFile( "vr" );
 	XR_DeleteFile( "version" );
 
+#ifdef _WIN32
+	if ( xr_wsaStarted ) {
+		WSACleanup( );
+		xr_wsaStarted = qfalse;
+	}
+#endif
+
 	XR_Log( "shutdown: %d packets received", xr.packetsReceived );
 
 	if ( xr_logFile ) {
@@ -893,6 +1068,11 @@ void XR_Shutdown( void )
 const xr_state_t *XR_GetState( void )
 {
 	return &xr;
+}
+
+void XR_NoteGameState( qboolean inGame )
+{
+	xr_inGame = inGame;
 }
 
 qboolean XR_IsEnabled( void )

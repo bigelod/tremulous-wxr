@@ -55,4 +55,10 @@ void        XR_AdjustUsercmdAngles( vec3_t viewangles );
 // already contains the head's yaw via the usercmd path.
 void        XR_AdjustRefdef( refdef_t *rd, float bodyYaw );
 
+// Logged on change. viewheight is per class in this game -- twelve classes,
+// twelve bodies -- so it is the signal that D9's per-class world scale will
+// key off, and the cheapest proxy for "the player changed class" that does
+// not drag the game module's headers into the client.
+void        XR_NoteViewheight( int viewheight );
+
 #endif // __XR_VIEW_H

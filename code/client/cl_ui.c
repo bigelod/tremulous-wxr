@@ -852,8 +852,38 @@ intptr_t CL_UISystemCalls( intptr_t *args ) {
 		return 0;
 
 	case UI_GETCLIENTSTATE:
-		GetClientState( VMA(1) );
-		return 0;		
+		{
+			// **[device - Quest 3, 1 Nov 2026]** This is where the port
+			// crashed while loading a level: "Unhandled page fault on write
+			// access to 0000000000000004", which is GetClientState writing
+			// state->connectPacketCount at offset 4 through a NULL pointer.
+			//
+			// VMA() yields NULL in exactly two cases: the VM passed 0, or
+			// currentVM was NULL. Logging the raw argument separates them --
+			// a zero argument means the QVM really did pass NULL, anything
+			// else means the engine lost currentVM underneath us. Those are
+			// very different bugs and guessing between them costs a trip.
+			//
+			// Surviving instead of faulting is the right behaviour either
+			// way: the UI gets a stale struct for one frame, which is
+			// invisible, rather than taking the process down.
+			uiClientState_t *state = VMA(1);
+
+			if ( !state ) {
+				static int warned;
+
+				if ( warned < 8 ) {
+					warned++;
+					Com_Printf( "WARNING: UI_GETCLIENTSTATE with a NULL "
+								"pointer (VM arg = %ld). Ignored.\n",
+								(long)args[1] );
+				}
+				return 0;
+			}
+
+			GetClientState( state );
+		}
+		return 0;
 
 	case UI_GETGLCONFIG:
 		CL_GetGlconfig( VMA(1) );

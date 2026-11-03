@@ -364,6 +364,32 @@ void XR_AdjustRefdef( refdef_t *rd, float bodyYaw )
 
 /*
 ==================
+XR_NoteViewheight
+==================
+*/
+void XR_NoteViewheight( int viewheight )
+{
+	static int  last = -9999;
+
+	if ( viewheight == last ) {
+		return;
+	}
+	last = viewheight;
+
+	if ( !XR_IsEnabled() ) {
+		return;
+	}
+
+	// A human_base eye sits 48 units above the feet, which is where the 30
+	// units/metre default comes from. A Dretch or a Tyrant does not, so this
+	// line is the evidence for what the per-class scale should become.
+	XR_Log( "class: viewheight=%d (worldScale %.1f u/m is derived for a "
+			"HUMAN and is wrong for the other eleven classes)",
+			viewheight, vr_worldScale->value );
+}
+
+/*
+==================
 XR_ViewInit
 ==================
 */

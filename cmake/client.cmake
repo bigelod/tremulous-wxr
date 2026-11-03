@@ -36,6 +36,7 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/snd_openal.c
     ${SOURCE_DIR}/winlatorxr/xr_api.c
     ${SOURCE_DIR}/winlatorxr/xr_view.c
+    ${SOURCE_DIR}/winlatorxr/xr_sync.c
     ${SOURCE_DIR}/sdl/sdl_input.c
     ${SOURCE_DIR}/sdl/sdl_snd.c
     ${CLIENT_PLATFORM_SOURCES}

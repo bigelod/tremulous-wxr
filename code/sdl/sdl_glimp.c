@@ -54,6 +54,18 @@ cvar_t *r_centerWindow;
 cvar_t *r_sdlDriver;
 cvar_t *r_preferOpenGLES;
 
+// WinlatorXR. These live here rather than in xr_api.c because sdl_glimp.c is
+// compiled into the renderer DLL (cmake/renderer_common.cmake) and cannot
+// reach the client executable's symbols -- but cvars cross that boundary
+// through the ri import table just fine.
+static cvar_t *vr_enable_glimp;
+static cvar_t *vr_borderless;
+
+// Defined down beside GLimp_EndFrame, but used up in GLimp_Init, so it needs
+// declaring here -- without this it is implicitly declared as returning int,
+// which happens to work and is still wrong.
+static qboolean GLimp_VRWantsBorderless( void );
+
 int qglMajorVersion, qglMinorVersion;
 int qglesMajorVersion, qglesMinorVersion;
 
@@ -1085,6 +1097,16 @@ void GLimp_Init( qboolean fixedFunction )
 	r_centerWindow = ri.Cvar_Get( "r_centerWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_preferOpenGLES = ri.Cvar_Get( "r_preferOpenGLES", "-1", CVAR_ARCHIVE | CVAR_LATCH );
 
+	vr_enable_glimp = ri.Cvar_Get( "vr_enable", "0", CVAR_ARCHIVE | CVAR_LATCH );
+
+	// The runtime samples pixel (0,0) of the captured window. A title bar
+	// there means it samples the title bar, head tracking silently degrades,
+	// and the camera gets blamed for it -- this is the single most common
+	// cause of "I implemented sync and nothing changed". So with VR on we
+	// strip the border even in windowed mode, where the game would otherwise
+	// have chrome in exactly the wrong corner.
+	vr_borderless = ri.Cvar_Get( "vr_borderless", "1", CVAR_ARCHIVE );
+
 	if( ri.Cvar_VariableIntegerValue( "com_abnormalExit" ) )
 	{
 		ri.Cvar_Set( "r_mode", va( "%d", R_MODE_FALLBACK ) );
@@ -1096,7 +1118,8 @@ void GLimp_Init( qboolean fixedFunction )
 	ri.Sys_GLimpInit( );
 
 	// Create the window and set up the context
-	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer, fixedFunction))
+	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer,
+			r_noborder->integer || GLimp_VRWantsBorderless( ), fixedFunction))
 		goto success;
 
 	// Try again, this time in a platform specific "safe mode"
@@ -1182,8 +1205,58 @@ GLimp_EndFrame
 Responsible for doing a swapbuffers
 ===============
 */
+/*
+===============
+GLimp_VRWantsBorderless
+
+Whether the WinlatorXR path needs the window's chrome gone. Fullscreen
+already has none, so this only has anything to say in windowed mode -- which
+is how the game is run on the desktop while testing, and where the sync pixel
+would otherwise land under a title bar.
+===============
+*/
+static qboolean GLimp_VRWantsBorderless( void )
+{
+	if ( !vr_enable_glimp || !vr_borderless ) {
+		return qfalse;
+	}
+
+	return ( vr_enable_glimp->integer && vr_borderless->integer )
+			? qtrue : qfalse;
+}
+
 void GLimp_EndFrame( void )
 {
+	// Re-assert borderless every frame, because engines rebuild windows and
+	// a window that quietly regains its chrome takes the sync pixel with it.
+	// SDL_SetWindowBordered is only called when the flag actually disagrees,
+	// so the common case costs one flag read and no window manager traffic.
+	// We remember the window we last asked, rather than trusting
+	// SDL_GetWindowFlags to report the change back. Under Wine the flag has
+	// no obligation to round-trip, and if it does not, a condition based on
+	// it calls SDL_SetWindowBordered on EVERY frame -- a window-manager
+	// storm inside two translation layers. Asking once per window gets the
+	// same result for one pointer comparison.
+	//
+	// The window is recreated on a mode change, so a new pointer means a new
+	// window that has not been asked yet. That is the "re-apply because
+	// engines rebuild windows" requirement, met without the per-frame call.
+	static SDL_Window *lastBorderedWindow;
+
+	if ( SDL_window && SDL_window != lastBorderedWindow
+		 && GLimp_VRWantsBorderless( ) )
+	{
+		Uint32 wflags = SDL_GetWindowFlags( SDL_window );
+
+		lastBorderedWindow = SDL_window;
+
+		if ( !( wflags & SDL_WINDOW_FULLSCREEN ) )
+		{
+			SDL_SetWindowBordered( SDL_window, SDL_FALSE );
+			ri.Printf( PRINT_ALL, "VR: window border removed\n" );
+		}
+	}
+
 	// don't flip if drawing to front buffer
 	if ( Q_stricmp( r_drawBuffer->string, "GL_FRONT" ) != 0 )
 	{

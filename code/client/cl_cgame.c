@@ -23,6 +23,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "client.h"
 #include "../winlatorxr/xr_view.h"
+#include "../winlatorxr/xr_weapon.h"
+#include "../winlatorxr/xr_hud.h"
 #include "../winlatorxr/xr_api.h"
 
 #ifdef USE_MUMBLE
@@ -560,6 +562,17 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		re.ClearScene();
 		return 0;
 	case CG_R_ADDREFENTITYTOSCENE:
+		// Stage 8. The view weapon is held back here and re-added at the
+		// hand in CG_R_RENDERSCENE, once cgame's refdef is known -- that
+		// refdef is the frame these entities were positioned in, and it does
+		// not reach the engine until the RenderScene call.
+		//
+		// XR_CaptureViewWeapon takes only RF_FIRST_PERSON entities, and only
+		// for a living human with the hand gun on. Everything else, and
+		// every alien, falls straight through to the renderer unchanged.
+		if ( XR_CaptureViewWeapon( VMA(1) ) ) {
+			return 0;
+		}
 		re.AddRefEntityToScene( VMA(1) );
 		return 0;
 	case CG_R_ADDPOLYTOSCENE:
@@ -591,10 +604,43 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 			// -- not even the copy.
 			if ( XR_IsEnabled( ) ) {
 				refdef_t	vrRefdef;
+				float		bodyYaw;
 
 				vrRefdef = *(refdef_t *)VMA(1);
 				XR_NoteViewheight( cl.snap.ps.viewheight );
-				XR_AdjustRefdef( &vrRefdef, cl.viewangles[YAW] );
+
+				// What the runtime is told the frame's FOV is has to be what
+				// the frame was actually drawn with, or it composites at the
+				// wrong scale -- which feels like the view drifting as you
+				// turn, not like a wrong FOV.
+				XR_NoteFov( vrRefdef.fov_x, vrRefdef.fov_y );
+
+				// THE BODY'S YAW IN THE WORLD, which is not cl.viewangles.
+				//
+				// cl.viewangles is only the half of the aim the client
+				// accumulates; the server keeps the rest in delta_angles and
+				// adds it back, which is how a spawn point, a teleporter or
+				// setviewpos turns the player without the mouse moving. On a
+				// map whose spawn faces 130 degrees, every yaw taken from
+				// cl.viewangles alone is 130 degrees out.
+				//
+				// Everything downstream of here rotates the ROOM into the
+				// WORLD -- where the hand is, which way a lean goes, which
+				// frame the camera is corrected through -- so the client's
+				// half on its own puts the gun beside the wrong hip and
+				// sends a lean off sideways. Hence the whole angle.
+				bodyYaw = cl.viewangles[YAW];
+				if ( cl.snap.valid ) {
+					bodyYaw += SHORT2ANGLE( cl.snap.ps.delta_angles[YAW] );
+				}
+
+				// Stage 8. The captured first-person weapon is placed and
+				// added HERE, using cgame's ORIGINAL refdef -- that is the
+				// frame cgame positioned those entities in, and
+				// XR_AdjustRefdef is about to move it.
+				XR_EmitHandWeapon( &vrRefdef, bodyYaw );
+
+				XR_AdjustRefdef( &vrRefdef, bodyYaw );
 				re.RenderScene( &vrRefdef );
 			} else {
 				re.RenderScene( VMA(1) );
@@ -608,7 +654,16 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		re.SetClipRegion( VMA(1) );
 		return 0;
 	case CG_R_DRAWSTRETCHPIC:
-		re.DrawStretchPic( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
+		{
+			// Every 2D element in the game arrives here -- bars, icons and
+			// text glyphs alike -- so shrinking the rectangle here moves
+			// the whole HUD inwards, where a headset can resolve it. The
+			// 3D view is untouched: that goes through RenderScene.
+			float	x = VMF(1), y = VMF(2), w = VMF(3), h = VMF(4);
+
+			XR_HudScale2D( &x, &y, &w, &h );
+			re.DrawStretchPic( x, y, w, h, VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
+		}
 		return 0;
 	case CG_R_MODELBOUNDS:
 		re.ModelBounds( args[1], VMA(2), VMA(3) );

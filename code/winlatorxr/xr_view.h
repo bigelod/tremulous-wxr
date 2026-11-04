@@ -44,6 +44,13 @@ qboolean    XR_HeadAngles( vec3_t angles );
 // usercmd, because the server has to agree about where the player is aiming.
 // Yaw and pitch belong here and NOWHERE else -- applying them in the render
 // hook as well is the classic double-rotation bug.
+// The dominant hand's pose, in exactly the same convention as the head's:
+// engine angles, recentred, body yaw NOT included; offset in engine units in
+// the recentred room frame. hand is 0 = left, 1 = right.
+qboolean    XR_HandBasis( int hand, vec3_t axis[3] );
+qboolean    XR_HandAngles( int hand, vec3_t angles );
+qboolean    XR_HandOffset( int hand, vec3_t offset );
+
 void        XR_AdjustUsercmdAngles( vec3_t viewangles );
 
 // Hook 1. Applies only what the server does not need to know: roll, composed

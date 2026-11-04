@@ -344,6 +344,315 @@ desktop, stop reading logs and attach a debugger.
 
 ---
 
+## Stage 7 - controller input, 3 November 2026
+
+**Confirmed on device first:** AlphaTest6 ran on a Quest 3 under WinlatorXR
+standalone without crashing. The `sv_pure` packaging fix holds.
+
+Input is implemented in `code/winlatorxr/xr_input.c`, hooked from
+`CL_CreateCmd` (sticks) and `XR_Frame` (buttons).
+
+### Two mechanisms, and why
+
+**Digital controls become synthesised key events** (`Com_QueueEvent`,
+`SE_KEY`), not usercmd button bits. The reason is the rule that keeps this
+port out of the QVMs: half the controls asked for are not bits at all.
+`reload`, `deconstruct` and `+scores` are *commands* cgame registers with
+`trap_AddCommand`, and the purchase/evolve menu is a UI menu. None can be
+expressed as a bit and none can be reimplemented engine-side, because a pure
+server replaces the code that implements them. Feeding keys in through the
+bind system gets all of them for free, respects the player's own binds, and
+keeps `cl_run`/`BUTTON_WALKING` handling in `CL_KeyMove` where it already is.
+
+**The sticks are analog** and cannot be a key event, so they go straight into
+the usercmd (`forwardmove`/`rightmove`) and into `cl.viewangles[YAW]` - the
+latter being *body* yaw, the same place `CL_MouseMove` puts mouse turn, with
+head yaw still added on top in `XR_AdjustUsercmdAngles`.
+
+### The mapping
+
+| Control | Bool index (right-dominant) | Key cvar | Default | Effect |
+|---|---|---|---|---|
+| dominant trigger | 18 | `vr_key_fire` | MOUSE1 | `+attack` |
+| off trigger | 7 | `vr_key_altFire` | MOUSE2 | `+button5` (attack2) |
+| dominant grip | 12 | `vr_key_jump` | SPACE | `+moveup` |
+| off grip | 0 | `vr_key_crouch` | c | `+movedown` |
+| off stick click | 2 | `vr_key_sprint` | SHIFT | `+speed` |
+| A | 10 | `vr_key_buy` | q | `+button7`, purchase/evolve |
+| B | 11 | `vr_key_reload` | r | `reload` |
+| X | 8 | `vr_key_scores` | TAB | `+scores` |
+| Y | 9 | `vr_key_deconstruct` | e | `deconstruct` |
+| off stick | floats 4-5 | - | - | move |
+| dominant stick X | float 13 | - | - | turn body |
+| dominant stick Y | float 14 | `vr_cmd_weapNext/Prev` | weapnext/weapprev | change weapon, latched |
+
+`vr_dominantHand 1` mirrors triggers, grips, sticks and the face buttons
+together. **Left menu is deliberately unmapped** - WinlatorXR turns it into
+ESC and the owner's instruction was not to block it.
+
+Other cvars: `vr_stickDeadzone` (0.15, rescaled not clipped),
+`vr_turnSpeed` (140 deg/s), `vr_moveEnable`, `vr_turnEnable`,
+`vr_inputAlways` (0; process input outside play, for desk testing).
+
+### Verified on the desktop, against the spoofer
+
+`scripts/xr_spoof.py` gained `--press` and `--sticks` to make this testable;
+with neither it sweeps one bool index per second, which is the discovery mode.
+
+| Check | Result |
+|---|---|
+| bool -> edge -> key event -> **Tremulous bind executed** | probe bind fired (F12 -> `echo`) |
+| all 9 actions decode, all default key names resolve | 9/9, zero warnings |
+| left-handed swap | index 7 -> fire, 0 -> jump, `hand=left` |
+| stick forward / back / neutral | `fwd=+127` / `-127` / no contribution |
+| movement actually moves the player | ~200 units as a spectator |
+| turn direction and rate | stick right -> yaw decreases, ~stick x turnSpeed |
+| `vr_turnEnable 0` / neutral deadzone | no yaw change / no usercmd contribution |
+| index 1 (left menu) | `down=[-]`, correctly unmapped |
+| trigger -> MOUSE1 while gated off, released on handover | confirmed |
+
+### The menu click - [device, 3 Nov 2026]
+
+The gate below switched the controller off outside play, which was right for
+letter keys and wrong for the one control a menu actually needs. The owner
+could not get through Tremulous's **spawn menu** at all without sending CTRL
+from WinlatorXR's on-screen keyboard.
+
+**Fixed:** while the gate is closed, either trigger sends `vr_key_menuClick`
+(default MOUSE1) and nothing else is sent. MOUSE1 answers both halves of the
+problem, which is why it is the default - it is the menu click while the UI
+holds the keyboard, and it is Tremulous's `+attack` once the menu closes,
+which is what CTRL was doing by hand.
+
+Both triggers are OR'd into one logical key. Two independent down/up pairs on
+the same key would let the first release strand the second press down.
+
+Verified that the handover is clean in both directions with the trigger held
+continuously across it: click while connecting, `down=[fire]` once playing,
+and click again when the spawn menu opens - the second click edge only
+happens if the first was properly released.
+
+### Select-item, and a sprint mapping that was wrong - 3 Nov 2026
+
+**Select item.** Cycling with weapnext/weapprev only SELECTS; Tremulous
+expects ENTER (`+button2`, BUTTON_USE_HOLDABLE) to activate. That split is
+deliberate in the game - it lets a player line up a medkit while still
+shooting. Added as a second action row sharing the A button's bool index:
+A now sends both `vr_key_buy` and `vr_key_useItem`. Two rows rather than one
+row sending two keys, so either can be moved or disabled with one cvar.
+An empty `vr_key_*` now means "disabled", silently, which is how to unpair
+them. Watch for A spending an upgrade while shopping at an armoury.
+
+**Sprint was mapped to the wrong control.** AlphaTest7 sent `+speed`.
+`cg_tutorial.c`'s own binding table is unambiguous:
+
+    { "+speed",   "Run/Walk" }      <- a walk modifier
+    { "+button8", "Sprint"   }      <- BUTTON_SPRINT, burns stamina
+
+Tremulous ships Sprint **unbound**, and said so on the HUD in as many words:
+`Press "Sprint" (unbound) and any direction to sprint`. So the shipped
+autoexec now does `bind HOME +button8` and `vr_key_sprint` points at it.
+Verified by turning the tutorial back on and reading the HUD: it now says
+**"Press HOME and any direction to sprint"**.
+
+The `seta` in the autoexec is not redundant - `vr_key_sprint` is
+CVAR_ARCHIVE and AlphaTest7 already saved "SHIFT" to autogen.cfg, which
+would otherwise beat the new compiled default.
+
+**The control tutorial text is off** (`cg_tutorial 0`, in the shipped
+autoexec). It costs scarce HUD space and reads "Press MOUSE1" to someone
+wearing a headset - technically correct for our synthetic keys and useless.
+A cvar, not a code change: cg_tutorial belongs to cgame, and cgame is a QVM
+a pure server replaces. Verified by screenshot, before and after.
+
+**Screenshots are a usable verification channel on the desktop.** `screenshot`
+plus a 40-line TGA-to-PNG converter settled two visual claims in this session
+that no log could have. Worth remembering for anything HUD-shaped.
+
+### The input gate, which is worth knowing about
+
+Input is processed only while `clc.state == CA_ACTIVE` and the UI does not
+hold the key catcher - the same condition as `vr_autoMode`. Synthesising
+`c`, `r` or TAB into a 2D menu would type into its fields.
+
+A consequence found during testing, and **not a defect**: joining a team
+opens Tremulous's spawn menu, which holds `KEYCATCH_UI`, so the gate closes
+until the player has spawned. The mouse drives those menus, by design.
+
+`vr.log` now logs the gate on every transition, with `clc.state`, the key
+catcher and `vr_inputAlways`, because "the controller does nothing" has three
+different causes that are indistinguishable from inside a headset. That line
+explained two anomalies in this session on its own.
+
+### Still open, and honest about it
+
+**The button table is from documents, not from this device.**
+`XRAPI_V0_4_DESC.md` section 3 and Shogo's `XrApiUDP.h` agree on it, and
+neither is a guess - but PROJECT_PLAN's instruction to confirm it against a
+device log stands, and has not been done. `vr_verbose 1` logs
+`input: bools="..." down=[...]` on every change, so one session of pressing
+each button in turn settles it, and a wrong index shows up as the wrong name
+rather than as "the controls feel odd".
+
+Untested on device: everything in this stage.
+
+---
+
+## Stage 8 - the gun in the hand, 3 November 2026
+
+Two designs were tried on the same day. The second is what ships.
+
+**AlphaTest9, withdrawn.** The usercmd carried the GUN's direction so that
+shots followed the hand, and the camera was rotated back onto the head
+afterwards. On hardware, rotating the controller rotated the view. Owner's
+verdict: *"the VR gun should be completely separate from the player"*.
+
+**AlphaTest10, shipping.** Owner's design: *"make a fake gun, it's for
+visuals only, the in-game gun can be the head, just visually offset
+everything for VR."* The aim is the head, as it was in AlphaTest8. The
+visible gun is a duplicate drawn at the dominant hand in full 6DOF and is
+scenery. Shots leave along the view, so the crosshair is the aim and the
+model is a prop.
+
+That removed, rather than fixed, all three compensations AlphaTest9 needed:
+the camera correction in `XR_AdjustRefdef`, the matching stick pre-rotation
+in `XR_StickMove`, and the `vr_handAim` cvar that switched them. There is
+nothing left to correct - the server is told what the head is doing, cgame
+builds the view from that, and the view is simply right.
+
+### The two defects AlphaTest9 shipped with
+
+Both are worth keeping written down, because the second one is live code and
+the first is the reason a passing test meant nothing.
+
+**1. `cl.viewangles` is not the body's yaw in the world.** It is only the
+half of the aim the client accumulates; the server keeps the rest in
+`ps.delta_angles` and adds it back, which is how a spawn point, a teleporter
+or `setviewpos` turns the player without the mouse moving. On a map whose
+spawn faces 130 degrees, every `cl.viewangles`-based yaw is 130 degrees out.
+Both render hooks now use
+
+```c
+bodyYaw = cl.viewangles[YAW];
+if ( cl.snap.valid )
+    bodyYaw += SHORT2ANGLE( cl.snap.ps.delta_angles[YAW] );
+```
+
+Everything downstream rotates the ROOM into the WORLD - where the hand is,
+which way a lean goes - so the client's half alone put the gun beside the
+wrong hip and sent a lean off sideways. **This one still matters**: the hand
+gun and the positional lean both depend on it.
+
+**2. A rotation does not cancel against itself across a change of basis.**
+AlphaTest9's camera correction built the gun and head frames *without* body
+yaw, on the reasoning that anything present in both would cancel. For an
+additive term it would. For a rotation it does not: the result is body yaw
+conjugated by the gun, `G^T.Rz(b).G`, which equals `Rz(b)` only when `b` is
+zero. Modelled, with body yaw 130 and a 25-degree gun pitch, the camera came
+out at pitch 36.6 where it should have been 5.
+
+### Three more defects, found after the first device run
+
+**Meta controller poses arrive upside down.** Owner on a Quest 3: *"the
+rifle faced the right way but was upside down."* The 0.4 spec's HWXR excerpt
+records this against the Meta codenames it falls through on, but EUREKA
+takes its own branch there, so it is the **make** that decides, not the
+model. `XR_GunRoll()` applies 180 degrees of roll about the barrel for any
+META headset. Model only - the aim is the head, so a rolled controller could
+never have moved a shot.
+
+Detection is a guess, so it is overridable two ways, as the spec asks:
+`vr_gunRoll` / `vr_gunYaw` (-1 = detect), and **`handsfix.txt`** beside the
+executable or in `base/`, read with `fopen` rather than through the
+filesystem - the player creates it by hand on the device, so it is not in a
+pk3 and a pure server must not be able to hide it.
+
+**The gun was placed twice.** cgame holds the weapon out in front of the
+face; re-anchoring every captured entity at the hand without removing that
+offset put the model at hand + cgame's eye offset. Roughly double the
+distance, in a direction that no longer meant anything once the frame it was
+measured in had been replaced. Subtracting the **first** captured entity's
+offset - one shared displacement, not each entity's own - lands the root on
+the hand and leaves the rigid assembly of hands, gun, barrel and flash
+intact. The log now prints both distances so they can be seen to agree.
+
+**The recentre latched the first packet.** Which is the packet most likely
+to arrive before the runtime has a tracked position: a desktop run latched a
+head height of 0.006 m, after which the hand came out 39 units *above* the
+eye instead of 10 below. `XR_TryAutoRecentre()` now retries until the head
+is at least 0.5 m up and logs how many packets it rejected. The bound is
+loose on purpose - it rejects an origin that is not a measurement, it does
+not police how the player sits. `vr_recentre` is never blocked.
+
+Both of the last two produce symptoms that read as a broken pose transform
+while the transform is correct, which is worth remembering: when the gun is
+in a stupid place, suspect the **origin** before the maths.
+
+### How the model is moved
+
+`CG_AddViewWeapon` builds the gun from several entities - hands, gun, barrel,
+flash - each on a tag of the one before, all inheriting `RF_FIRST_PERSON`.
+Rather than move them individually, **every RF_FIRST_PERSON entity is
+captured** in `CG_R_ADDREFENTITYTOSCENE` and the whole set is re-expressed
+from cgame's camera frame into the gun's frame by one rigid transform in
+`CG_R_RENDERSCENE`. Relative geometry survives for free and nothing needs to
+know which entity is the barrel.
+
+The source frame must be cgame's **original** refdef, before
+`XR_AdjustRefdef` moves it - that is the frame cgame placed them in.
+`RF_DEPTHHACK` is dropped: it squashes the gun into a narrow depth range,
+which is right for a gun welded to the camera and wrong for one held at
+arm's length.
+
+**Aliens are excluded.** They have no gun - they attack with the body and the
+face - so cgame's first-person model is left alone. `XR_HandGunActive()` is
+the single place that decides.
+
+Game constants (`STAT_TEAM`, `TEAM_HUMANS`, the `pm_type` values) are spelled
+out numerically rather than included from `bg_public.h`, which is QVM
+territory. A mod that renumbers them reads as "always alien", which fails
+safe.
+
+### Verified on the desktop, as a live spawned human at body yaw 130
+
+| Check | Result |
+|---|---|
+| **camera is deaf to the hand** | `camYaw` 130.0 == expected 130.0 while gun yaw swept -40 to +12 and gun pitch swept +-25 |
+| camera still follows the head | `camYaw` 150.4 / 167.0 / 179.5 == expected, head sweeping, hand sweeping independently |
+| model sits ON the hand | hand 17 u out, model 17 u - the two distances agree, which is what the double-placement bug broke |
+| roll is applied | `roll=180 (auto)` on META / QUEST 3 |
+| `handsfix.txt` overrides | `roll false` gave `roll=0 (set)`; unknown keys and non-numeric values were rejected by name |
+| recentre is sane | 1.596 / 1.641 / 1.646 m over three cold runs, against 0.006 m before the fix |
+| gun orientation follows the hand | gun yaw tracked the sweep one-for-one; pitch -17 to -25 |
+| body yaw is the world's | `bodyYaw=130.0` after `setviewpos ... 130`, which read 0.0 before the fix |
+| no menu parse errors | 0 |
+
+### Cvars
+
+`vr_handGun` (1) master switch; `vr_gunForward` / `vr_gunRight` /
+`vr_gunUp` position trim in engine units; `vr_gunPitch` / `vr_gunYaw` /
+`vr_gunRoll` orientation trim in degrees, the last two taking -1 for
+"detect from the headset". `handsfix.txt` sets the same three without a
+console. `vr_handAim` is gone.
+
+### Spoofer: why `--hand-sweep` had to exist
+
+`--head-yaw` and `--hand-yaw` hold the head and hands at FIXED angles, and a
+fixed hand angle is exactly what made AlphaTest9's test worthless. The server
+absorbs it into `delta_angles` the moment anything sets the view angles;
+after that the aim is constant and the camera cannot be observed tracking it.
+The test passed with the bug completely intact.
+
+`--hand-sweep` moves the hand in yaw and pitch on different periods, so the
+camera has to hold still against a moving gun rather than against a parked
+one. Use it, not `--hand-yaw`, for any claim about the camera.
+
+Hand positions were also corrected earlier to absolute room coordinates
+(y ~ 1.30, chest height) - they were at y = -0.25, under the floor, which put
+the gun 55 units below the eye and looked exactly like a broken transform.
+
+---
+
 ## Currently debugging
 
 Nothing. The local-hosting crash above is fixed and verified on the desktop,
@@ -369,3 +678,71 @@ purity or VR issue. Non-fatal - console spam only.
 
 Stages 2 and 4 behave correctly against `scripts/xr_spoof.py`; the remaining
 open items are device observations that have not been made yet.
+
+---
+
+## Stage 9 - aiming with the hand on the trigger, 3 November 2026
+
+Owner's call: *"when the player shoots we should aim the in-game aim to that
+angle of the dominant hand."* So the AlphaTest9 scheme comes back - but
+**only while the fire control is held**, instead of permanently.
+
+### Is the render camera now a different camera from the game's?
+
+The owner asked this directly and the answer changed with this build.
+
+Up to AlphaTest10, **no**. The camera was cgame's own, with head roll and
+the positional lean composed on top. The aim was the head, the server built
+the player state from it, cgame built the view from that. Same camera,
+decorated.
+
+From stage 9, **yes, during a squeeze**. The usercmd carries the hand's
+direction, cgame points the refdef down the barrel, and `XR_AdjustRefdef`
+rotates the basis back onto the head before the renderer sees it.
+
+### What keeps it from being AlphaTest9 again
+
+Three things must switch together or the view swings when the player
+shoots: the aim, the camera correction, and the movement stick. All three
+now ask **`XR_GunAimActive()`** and nothing else. The AlphaTest9 lesson is
+in the structure rather than in a comment.
+
+Two fixes carried into the restored correction:
+
+1. **Body yaw goes in both frames.** `V' = V . G^T . H` is only right when
+   `G` and `H` are the frames `V` is expressed against, which are world
+   ones. Omitting a shared `Rz(b)` from both does not cancel - it conjugates
+   - so the error was zero at yaw 0, where the old test stood.
+2. **The correction reads a latch, not a fresh sample.** The angles that
+   were actually sent are stored by `XR_AdjustUsercmdAngles` and reused in
+   the render hook. Re-sampling the pose a few milliseconds later corrects
+   against an aim that was never sent, which shimmers on exactly the frames
+   where the player is shooting.
+
+### The 2D layer - `xr_hud.c`
+
+**Crosshair off** by setting cgame's own `cg_drawCrosshair` to 0, not by
+filtering draw calls. cgame then also skips the hit marker and the
+per-weapon crosshair sizes, rather than us trying to recognise those in a
+stream of untagged quads. It works under `sv_pure` because the cvar is read
+out of the client.
+
+**`vr_hudScale` (0.5)** shrinks the whole 2D layer towards the centre, so a
+HUD laid out for a monitor lands where a headset can resolve it. Every 2D
+element - text included, since glyphs are quads - arrives through
+`CG_R_DRAWSTRETCHPIC`, so one transform there moves all of it and the 3D
+view is untouched. cgame has already run `CG_AdjustFrom640`, so the
+coordinates are real pixels and the centre is the renderer's own size
+halved.
+
+Full-screen quads are skipped: loading screens and fades are drawn like any
+other bar, and shrinking one leaves the un-faded original round the edge.
+
+### Verified
+
+| Check | Result |
+|---|---|
+| **camera holds while FIRING** | 29 gun-aim frames, `camYaw` 163.1 == expected every frame, gun sweeping 40 deg |
+| camera holds while idle | `camYaw` 130.0 == expected |
+| crosshair off | `cg_drawCrosshair 0`, logged with the reason |
+| HUD shrinks, world does not | screenshot at 1.0 against 0.5 |

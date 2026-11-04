@@ -56,6 +56,7 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 //    and the lean offset.
 
 #include "xr_view.h"
+#include "xr_weapon.h"
 #include "xr_api.h"
 #include "../qcommon/qcommon.h"
 
@@ -69,6 +70,12 @@ static cvar_t   *vr_pitchEnable;
 static float    xr_centreYaw;           // degrees, Q3 frame
 static vec3_t   xr_centrePos;           // metres, XR frame
 static qboolean xr_centred;
+
+// WHAT THE LAST USERCMD ACTUALLY CARRIED. The render hook corrects against
+// these, not against a fresh sample of the pose -- see XR_AdjustUsercmdAngles.
+static qboolean xr_sentWasGun;
+static vec3_t   xr_sentGun;         // recentred room angles, no body yaw
+static vec3_t   xr_sentHead;
 
 // Logged on change rather than per frame; a log the owner has to scroll is a
 // log that gets skimmed.
@@ -106,9 +113,10 @@ static void XR_QRotate( const vec4_t q, const vec3_t v, vec3_t out )
 
 /*
 ==================
-XR_HeadBasis
+XR_PoseBasis
 
-The HMD orientation as an engine-frame basis matrix, before recentring.
+Any tracked orientation as an engine-frame basis matrix, before recentring.
+Shared by the head and both hands -- one conversion, used three times.
 
 Rotate the canonical axes by the quaternion and relabel. Never convert or
 mirror the quaternion itself -- doing that by hand reliably produces a basis
@@ -116,19 +124,14 @@ that is subtly not orthonormal, and then the symptoms get debugged instead of
 the cause.
 ==================
 */
-static qboolean XR_HeadBasis( vec3_t axis[3] )
+static void XR_PoseBasis( const vec4_t q, vec3_t axis[3] )
 {
-	const xr_state_t    *s = XR_GetState();
 	const vec3_t        xrForward = { 0.0f, 0.0f, -1.0f };
 	const vec3_t        xrUp      = { 0.0f, 1.0f,  0.0f };
 	vec3_t              f, u;
 
-	if ( !s->valid ) {
-		return qfalse;
-	}
-
-	XR_QRotate( s->hmdQuat, xrForward, f );
-	XR_QRotate( s->hmdQuat, xrUp, u );
+	XR_QRotate( q, xrForward, f );
+	XR_QRotate( q, xrUp, u );
 
 	// (x, y, z)_xr -> (-z, -x, y)_q3
 	axis[0][0] = -f[2];
@@ -141,6 +144,84 @@ static qboolean XR_HeadBasis( vec3_t axis[3] )
 
 	// left = up x forward, which keeps the basis right-handed.
 	CrossProduct( axis[2], axis[0], axis[1] );
+}
+
+/*
+==================
+XR_HeadBasis
+==================
+*/
+static qboolean XR_HeadBasis( vec3_t axis[3] )
+{
+	const xr_state_t    *s = XR_GetState();
+
+	if ( !s->valid ) {
+		return qfalse;
+	}
+
+	XR_PoseBasis( s->hmdQuat, axis );
+	return qtrue;
+}
+
+/*
+==================
+XR_HandBasis / XR_HandAngles / XR_HandOffset
+
+The same conversion as the head, reached through the same two functions.
+Writing a second one for the hand is the obvious shortcut and the reliable
+way to end up with two frames that disagree by a sign nobody can find.
+==================
+*/
+qboolean XR_HandBasis( int hand, vec3_t axis[3] )
+{
+	const xr_state_t    *s = XR_GetState();
+
+	if ( !s->valid || hand < 0 || hand > 1 ) {
+		return qfalse;
+	}
+
+	XR_PoseBasis( s->handQuat[hand], axis );
+	return qtrue;
+}
+
+qboolean XR_HandAngles( int hand, vec3_t angles )
+{
+	vec3_t  axis[3];
+	vec3_t  raw;
+
+	if ( !XR_HandBasis( hand, axis ) ) {
+		return qfalse;
+	}
+
+	AxisToAngles( axis, raw );
+
+	angles[PITCH] = AngleNormalize180( raw[PITCH] );
+	angles[YAW]   = AngleNormalize180( raw[YAW] - xr_centreYaw );
+	angles[ROLL]  = AngleNormalize180( raw[ROLL] );
+
+	return qtrue;
+}
+
+qboolean XR_HandOffset( int hand, vec3_t offset )
+{
+	const xr_state_t    *s = XR_GetState();
+	vec3_t              d;
+	float               scale;
+
+	if ( !s->valid || !xr_centred || hand < 0 || hand > 1 ) {
+		return qfalse;
+	}
+
+	d[0] = s->handPos[hand][0] - xr_centrePos[0];
+	d[1] = s->handPos[hand][1] - xr_centrePos[1];
+	d[2] = s->handPos[hand][2] - xr_centrePos[2];
+
+	scale = vr_worldScale->value;
+
+	// (x, y, z)_xr -> (-z, -x, y)_q3, metres to engine units.
+	offset[0] = -d[2] * scale;
+	offset[1] = -d[0] * scale;
+	offset[2] =  d[1] * scale;
 
 	return qtrue;
 }
@@ -250,6 +331,7 @@ what stops the head yaw being integrated again on the following frame.
 void XR_AdjustUsercmdAngles( vec3_t viewangles )
 {
 	vec3_t  head;
+	vec3_t  gun;
 
 	if ( !XR_IsEnabled() ) {
 		return;
@@ -259,7 +341,73 @@ void XR_AdjustUsercmdAngles( vec3_t viewangles )
 		return;     // no pose: leave the flat game's aim untouched
 	}
 
+	// THE AIM IS THE HEAD, and the gun in the hand is scenery.
+	//
+	// AlphaTest9 tried it the other way round: the usercmd carried the
+	// GUN's direction and the camera was rotated back onto the head
+	// afterwards. The aim was right and the camera was wrong on hardware --
+	// rotating the controller moved the view. That whole correction is gone
+	// now, along with the matching one on the movement stick, because there
+	// is nothing left to correct: the server is told what the head is
+	// doing, cgame builds the view from that, and the view is simply right.
+	//
+	// What the hand owns the rest of the time is the VISIBLE gun, drawn at
+	// the controller in full 6DOF by xr_weapon.c.
+
+	// SHOTS FOLLOW THE DOMINANT HAND, BUT ONLY WHILE THE TRIGGER IS DOWN.
+	//
+	// Tremulous fires along the player's view angles; that is the only aim
+	// a usercmd carries and a pure server will not take a second one. So
+	// for the frames of a squeeze, the view angles ARE the hand's
+	// direction, and the camera is put back on the head afterwards in
+	// XR_AdjustRefdef.
+	//
+	// AlphaTest9 did this ALL THE TIME and the view swung with the
+	// controller. The difference now is not that the correction got better
+	// -- though it did, see XR_AdjustRefdef -- it is that the coupling only
+	// exists during a trigger pull instead of permanently.
+	//
+	// WHAT IS SENT IS LATCHED HERE, and the render hook reads the latch
+	// rather than sampling the pose again. Two samples a few milliseconds
+	// apart would disagree, and the correction would be computed against an
+	// aim that was never sent -- a shimmer on exactly the frames where the
+	// player is shooting and looking hardest.
+	if ( XR_GunAimActive() && XR_GunAngles( gun ) ) {
+		viewangles[YAW]   = AngleNormalize180( viewangles[YAW] + gun[YAW] );
+		viewangles[PITCH] = AngleNormalize180( gun[PITCH] );
+
+		VectorCopy( gun, xr_sentGun );
+		VectorCopy( head, xr_sentHead );
+		xr_sentWasGun = qtrue;
+
+		if ( vr_verbose->integer ) {
+			static int  lastLog;
+			int         now = Sys_Milliseconds();
+
+			if ( now - lastLog >= 1000 ) {
+				lastLog = now;
+				XR_Log( "aim: GUN (firing) p=%.1f y=%.1f, head y=%.1f -> "
+						"usercmd=[%.1f %.1f]",
+						gun[PITCH], gun[YAW], head[YAW],
+						viewangles[PITCH], viewangles[YAW] );
+			}
+		}
+		return;
+	}
+
+	xr_sentWasGun = qfalse;
 	viewangles[YAW] = AngleNormalize180( viewangles[YAW] + head[YAW] );
+
+	if ( vr_verbose->integer ) {
+		static int  lastHeadLog;
+		int         now = Sys_Milliseconds();
+
+		if ( now - lastHeadLog >= 1000 ) {
+			lastHeadLog = now;
+			XR_Log( "aim: HEAD y=%.1f usercmd=[%.1f %.1f]",
+					head[YAW], head[PITCH], viewangles[YAW] );
+		}
+	}
 
 	if ( vr_pitchEnable->integer ) {
 		// Head pitch replaces mouse pitch rather than adding to it. Adding
@@ -296,6 +444,62 @@ void XR_AdjustRefdef( refdef_t *rd, float bodyYaw )
 		return;
 	}
 
+	// ---- put the camera back on the head, if the shot took the aim ------
+	//
+	// Only on the frames where XR_AdjustUsercmdAngles sent the GUN's
+	// direction. cgame has built this refdef pointing down the barrel; we
+	// re-express the view basis from the gun's frame into the head's, and
+	// the camera returns to the head while everything cgame layered on top
+	// -- weapon kick, fall bob, the death cam, a wallwalker's whole
+	// orientation -- rides along, because this composes onto viewaxis
+	// rather than replacing it.
+	//
+	// BODY YAW GOES IN BOTH FRAMES. Leaving it out was the AlphaTest9
+	// defect. The correction is V' = V . G^T . H -- read the camera's
+	// orientation relative to the gun, then re-read it relative to the
+	// head -- and that is only right when G and H are the frames V is
+	// actually expressed against, which are WORLD frames. Drop body yaw b
+	// from both and what comes out is b conjugated by the gun,
+	// G^T.Rz(b).G, which equals Rz(b) only when b is 0. A rotation does not
+	// cancel against itself across a change of basis the way an additive
+	// term would, so the error was zero facing yaw 0 -- where the old
+	// desktop test stood -- and grew with b everywhere else.
+	//
+	// The angles come from the LATCH, so this corrects for the aim that was
+	// really sent rather than for a fresh sample that was not.
+	//
+	// Kick and bob are deliberately absent from G: they are in V, and
+	// V.G^T keeps them. That is what "composes onto" means here.
+
+	if ( xr_sentWasGun ) {
+		vec3_t  gunAngles  = { 0.0f, 0.0f, 0.0f };
+		vec3_t  headAngles = { 0.0f, 0.0f, 0.0f };
+		vec3_t  gunAxis[3], headAxis[3], out[3];
+		int     i;
+
+		gunAngles[PITCH]  = xr_sentGun[PITCH];
+		gunAngles[YAW]    = AngleNormalize180( xr_sentGun[YAW] + bodyYaw );
+		headAngles[PITCH] = vr_pitchEnable->integer ? xr_sentHead[PITCH] : 0.0f;
+		headAngles[YAW]   = AngleNormalize180( xr_sentHead[YAW] + bodyYaw );
+
+		AnglesToAxis( gunAngles, gunAxis );
+		AnglesToAxis( headAngles, headAxis );
+
+		for ( i = 0; i < 3; i++ ) {
+			float   l0 = DotProduct( rd->viewaxis[i], gunAxis[0] );
+			float   l1 = DotProduct( rd->viewaxis[i], gunAxis[1] );
+			float   l2 = DotProduct( rd->viewaxis[i], gunAxis[2] );
+
+			out[i][0] = l0 * headAxis[0][0] + l1 * headAxis[1][0]
+					  + l2 * headAxis[2][0];
+			out[i][1] = l0 * headAxis[0][1] + l1 * headAxis[1][1]
+					  + l2 * headAxis[2][1];
+			out[i][2] = l0 * headAxis[0][2] + l1 * headAxis[1][2]
+					  + l2 * headAxis[2][2];
+		}
+
+		AxisCopy( out, rd->viewaxis );
+	}
 	// ---- roll, composed about the view's own forward axis ----------------
 	//
 	// Rotating about viewaxis[0] rather than about world Z is the whole point
@@ -332,6 +536,26 @@ void XR_AdjustRefdef( refdef_t *rd, float bodyYaw )
 		VectorAdd( rd->vieworg, rotated, rd->vieworg );
 	} else {
 		VectorClear( rotated );
+	}
+
+	// THE number behind "why is rotating the controller rotating my head?".
+	// camYaw is where the camera ended up pointing; expected is where the
+	// head alone says it should be. If camYaw tracks gun y, the gun has got
+	// into the view again and this log says so without a headset.
+	if ( vr_verbose->integer ) {
+		static int  lastCamLog;
+		int         now = Sys_Milliseconds();
+		vec3_t      gun;
+
+		if ( now - lastCamLog >= 1000 ) {
+			lastCamLog = now;
+			XR_Log( "cam: camYaw=%.1f expected=%.1f (bodyYaw=%.1f + head y=%.1f)  gun y=%.1f",
+					AngleNormalize180( RAD2DEG( atan2( rd->viewaxis[0][1],
+													   rd->viewaxis[0][0] ) ) ),
+					AngleNormalize180( bodyYaw + head[YAW] ),
+					bodyYaw, head[YAW],
+					XR_GunAngles( gun ) ? gun[YAW] : 0.0f );
+		}
 	}
 
 	// ---- diagnostics -----------------------------------------------------

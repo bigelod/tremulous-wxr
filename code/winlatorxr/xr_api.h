@@ -97,11 +97,29 @@ const xr_state_t *XR_GetState( void );
 
 qboolean        XR_IsEnabled( void );
 
+// The headset, after HWXR's codename mapping (XRAPI_V0_4_DESC.md section 2).
+// Not cosmetic: HWXR's own comments record that Meta controller poses arrive
+// with the hands UPSIDE DOWN, so this is what the gun's roll correction hangs
+// off. Both default to META / QUEST 3 when the `system` file is absent, which
+// is the desktop case.
+// The FOV the engine is really drawing with. It is sent to the runtime in
+// place of any configured value, because the runtime uses it to scale the
+// frame onto the display -- and a frame composited at the wrong scale reads
+// as the view drifting when you turn your head, not as a wrong FOV.
+void            XR_NoteFov( float fovX, float fovY );
+
+const char     *XR_HmdMake( void );
+const char     *XR_HmdModel( void );
+
 // Tell the transport whether the player is actually PLAYING, as opposed to
 // sitting in a menu, connecting or loading. Drives MODE_VR: the runtime owns
 // the mouse and presents a flat panel at MODE_VR 0, which is the only way a
 // 2D menu built for a monitor stays usable in a headset.
 void            XR_NoteGameState( qboolean inGame );
+
+// What XR_NoteGameState was last told. Input is gated on this: synthesising
+// keys into a 2D menu would type into its text fields.
+qboolean        XR_InGame( void );
 
 // Button helper. Bounds-checked, so an index past the end of a short bool
 // string reads as not-pressed rather than running off the buffer.

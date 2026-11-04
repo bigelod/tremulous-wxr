@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "client.h"
 #include "../winlatorxr/xr_view.h"
+#include "../winlatorxr/xr_input.h"
 
 unsigned	frame_msec;
 int			old_com_frameTime;
@@ -584,6 +585,12 @@ usercmd_t CL_CreateCmd( void ) {
 
 	// keyboard angle adjustment
 	CL_AdjustAngles ();
+
+	// Stage 7. Stick turn accumulates into cl.viewangles -- BODY yaw, the
+	// same place CL_MouseMove puts mouse turn. The head's yaw is added on
+	// top later, in XR_AdjustUsercmdAngles, so this must not be folded in
+	// there or it would be applied twice.
+	XR_StickLook( frame_msec );
 	
 	Com_Memset( &cmd, 0, sizeof( cmd ) );
 
@@ -597,6 +604,11 @@ usercmd_t CL_CreateCmd( void ) {
 
 	// get basic movement from joystick
 	CL_JoystickMove( &cmd );
+
+	// Stage 7. Last of the movement contributors, because it reads back the
+	// BUTTON_WALKING that CL_KeyMove has already decided rather than making
+	// a second, possibly disagreeing, walk/run judgement.
+	XR_StickMove( &cmd );
 
 	// check to make sure the angles haven't wrapped
 	if ( cl.viewangles[PITCH] - oldAngles[PITCH] > 90 ) {

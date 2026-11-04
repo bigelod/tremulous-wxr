@@ -501,3 +501,255 @@ project's only channel back off the device. A diagnostic channel that lands in
 an unpredictable place costs exactly the manual round trip the whole logging
 discipline exists to avoid, and it fails *silently* - the engine log still
 says the XrApi client started.
+
+### 7. `cl.viewangles` is not the body's yaw in the world
+
+**Observed** on the Quest, as *"why is rotating the right controller rotating
+the head?"* in AlphaTest9.
+
+`cl.viewangles` is only the half of the aim the **client** accumulates. The
+server keeps the other half in `ps.delta_angles` and adds it back, which is
+how a spawn point, a teleporter or `setviewpos` turns the player without the
+mouse ever moving. Both render hooks were passing `cl.viewangles[YAW]` as
+"the body's yaw", so on a map whose spawn faces 130 degrees every yaw they
+derived was 130 degrees out.
+
+Everything downstream of that angle rotates the **room** into the **world** -
+where the hand is, which way a lean goes, which frame the camera is corrected
+through. So the client's half alone put the gun beside the wrong hip and sent
+the positional lean off sideways.
+
+**Fixed by** adding the server's half back in `CG_R_RENDERSCENE`:
+
+```c
+bodyYaw = cl.viewangles[YAW];
+if ( cl.snap.valid )
+    bodyYaw += SHORT2ANGLE( cl.snap.ps.delta_angles[YAW] );
+```
+
+**Verified** with `setviewpos 1678 320 40 130`: `vr.log` reports
+`bodyYaw=130.0`, where before the fix the same run reported `bodyYaw=0.0`.
+
+**General - belongs in `docs/general_wxr/`.** Any port that maps a room pose
+into the world needs the player's *world* yaw, and in every id Tech 3
+derivative the client-side variable with the obvious name is not it. Reach
+for `cl.viewangles + SHORT2ANGLE(delta_angles)`, and be suspicious of any VR
+code that reads `cl.viewangles` alone for anything but accumulating input.
+
+### 8. A rotation does not cancel against itself across a change of basis
+
+**Observed** in the same AlphaTest9 report. This defect is now moot - the
+design it supported was withdrawn - but the error is one any port could
+repeat.
+
+AlphaTest9 aimed with the hand and rotated the camera back onto the head
+afterwards, via `V' = V . G^T . H`: read the camera's orientation relative to
+the gun frame `G`, re-read it relative to the head frame `H`. Both frames
+were built **without** body yaw, on the reasoning that a term present in both
+would cancel.
+
+For an additive term it would. For a rotation it does not. With body yaw `b`
+in `V` but in neither `G` nor `H`, what comes out is `b` conjugated by the
+gun, `G^T.Rz(b).G` - equal to `Rz(b)` only when `b` is zero, or when every
+rotation involved shares an axis. Modelled at body yaw 130 with a 25-degree
+gun pitch, the camera emerged at pitch 36.6 where it should have been 5.
+
+**The lesson about the test, which is the expensive half.** The desktop test
+that blessed AlphaTest9 held the hand at a **fixed** angle, and the error is
+exactly zero at body yaw 0. Worse, a fixed hand angle gets absorbed into the
+server's `delta_angles` the moment anything sets the view angles - after
+which the aim is constant and a camera that tracks it cannot be distinguished
+from one that does not. The test passed with the bug entirely intact.
+
+`scripts/xr_spoof.py --hand-sweep` now moves the hand in yaw and pitch on
+different periods, so the camera must hold still against a *moving* gun. **A
+compensation can only be tested against a moving input**: a static pose makes
+the bug and the fix produce the same log line.
+
+### 9. Meta controller poses arrive upside down
+
+**Observed** on the Quest 3: *"the rifle faced the right way but was upside
+down"*.
+
+The 0.4 spec's HWXR excerpt, under *HMD DETECTION FOR UPSIDE DOWN HANDS*,
+records this against the Meta codenames it falls through on - SEACLIFF
+(Quest Pro), HOLLYWOOD (Quest 2), MONTEREY (Quest 1). The owner's EUREKA
+(Quest 3) takes a branch of its own in that chain, so the comments do not
+cover it, but the device says it behaves the same. It is therefore the
+**make** and not the model that decides: every Meta headset gets a 180
+degree roll about the gun's own barrel.
+
+Only the drawn model is affected - the aim is the head, so a rolled
+controller could never have moved a shot. That is also why this defect was
+visible but not measurable: no number was wrong, and no log line could have
+caught it.
+
+**Fixed by** `XR_GunRoll()` in `xr_weapon.c`, defaulting to the headset make
+and overridable two ways, as the spec asks:
+
+- `vr_gunRoll` / `vr_gunYaw`: `-1` means detect, anything else is degrees.
+- `handsfix.txt` beside the executable or in `base/`, one `key value` per
+  line (`roll 180`, `roll false`, `pitch -15`, `yaw auto`). Read with
+  `fopen`, not through the filesystem, because the player creates it by hand
+  on the device - so it is not in a pk3 and a pure server must not be able to
+  hide it.
+
+**General.** Detection of this kind is a guess about hardware you do not
+have. Ship the guess, but ship the override with it, and make the override
+something a player can use **without the console** - typing from inside a
+headset means the on-screen keyboard.
+
+### 10. WITHDRAWN - "the first packet is not a pose". It is a pose.
+
+**This entry was wrong, and the fix it describes was a regression.** It is
+kept rather than deleted because the mistake is instructive and the next
+port could make it just as easily.
+
+**What was observed:** a recentre latched `pos=[0.079 0.006 0.205]`. A head
+height of six millimetres. That was read as an untracked first packet, and
+`XR_Recentre` was gated behind "the head must be at least 0.5 m off the
+floor".
+
+**Why it was wrong:** XrApi positions are **head-centred, not
+floor-relative**. The tester capture in `scripts/SamplePoseData.txt` - a
+real Quest 3 packet - has the head at `y = 0.006` and both hands at
+`y = -0.23`, a palm's drop below it. There is no floor in this coordinate
+system to be half a metre above. 0.006 was a correct measurement of a head
+at the origin of its own space.
+
+**What the "fix" did on hardware:** the gate could never pass, so
+`xr_centred` stayed false forever, so `XR_HandOffset` refused, so the gun
+was drawn with no hand offset at all. Owner: *"the game gun is now stuck to
+my forehead, and my dominant hand config isn't doing anything."* Both
+symptoms, one cause - with no hand offset, left and right resolve to the
+same place, so the dominant-hand setting looks dead.
+
+**The real lesson, and it is not the one this entry originally drew.** A
+sanity check is an assumption about a coordinate system, stated as an
+assertion. Writing one against a space you have not confirmed does not
+validate the data - it validates your belief, and rejects the hardware when
+the two disagree. The synthetic poses in `xr_spoof.py` had been "corrected"
+to floor-relative coordinates on the same wrong belief, so the test rig
+agreed with the bug and the capture was the only thing that could have
+settled it.
+
+**Get a capture before writing a bound.** `--sample` replays one.
+
+### 11. The grip-to-barrel offset, measured instead of guessed
+
+**Observed:** *"the rifle faced the right way but was upside down"* on a
+Quest 3, and before that a screenshot of it pointing at the sky.
+
+`scripts/SamplePoseData.txt` is a real XrApi UDP Tester capture with both
+controllers held naturally - SixDOFinator draws it as two level, palm-down
+hands. Pushing those quaternions through our own conversion gives:
+
+| | pitch | roll |
+|---|---|---|
+| left hand | -34.0 | 176.7 |
+| right hand | -33.3 | -165.4 |
+
+**The two hands agree on pitch to within 0.7 degrees.** Nobody holds both
+controllers at an identical 33.6 degrees nose-up by accident, so that is a
+property of the reported frame, not of the pose, and it is ours to cancel.
+Roll agrees far less tightly - 18 degrees apart, which is real wrist
+difference - but both sit near a half turn, which is the "hands upside down"
+the 0.4 spec describes.
+
+**Fixed by** auto trims of pitch +34 and roll 180 for any META headset, in
+`XR_GunTrim`. Yaw auto stays 0: the spec says some headsets report the hands
+backwards, so the knob exists, but we have measured no device that does and
+inventing a value would be inventing a device.
+
+**Overridable three ways**, because detection is a guess about hardware we
+do not have: `vr_gunPitch` / `vr_gunYaw` / `vr_gunRoll`, each taking `auto`
+or degrees; or `handsfix.txt` beside the executable or in `base/`, for a
+player with no console. Verified: the capture replayed through the real
+build gives a final gun at pitch 0.7 and roll -14.6 - level and upright.
+
+**General.** Two hands agreeing to a fraction of a degree is the signature
+of a frame offset. Two hands disagreeing by tens of degrees is the signature
+of a pose. That distinction turns "it looks wrong" into a number.
+
+### 12. The FOV sent to the runtime was not the FOV being rendered
+
+**Observed:** *"the look around seems to have some kind of axis drift, up
+and down and left and right rotations start to feel like they drift off
+from their axes."*
+
+The outbound packet's FOV field tells the runtime how wide the frame it is
+compositing is. We sent `vr_fovX` / `vr_fovY`, two archived cvars both
+holding 104.5. The engine was rendering **99.3 x 67.0**.
+
+The vertical was out by 37 degrees, because a configured square FOV cannot
+describe a 16:9 frame. The runtime therefore maps the image onto the display
+at the wrong scale, and at a *different* wrong scale in pitch than in yaw -
+so the world moves at a different rate from the head, differently per axis.
+That does not read as "wrong FOV" from inside a headset. It reads as the
+view sliding, as rotations that do not return to where they started.
+
+**Fixed by** `XR_NoteFov`, fed from `vrRefdef.fov_x/fov_y` in the render
+hook every frame. The cvars survive only as a fallback for before the first
+frame is drawn.
+
+**It cannot be a setting even if the first value is right.** The measured
+run showed the engine moving between 106.3 x 73.7 and 99.3 x 67.0 during
+normal play - Tremulous changes FOV for zoom and aspect, as most games do.
+
+**General - belongs in `docs/general_wxr/`.** Send what you rendered, read
+from the frame, every frame.
+
+### 13. Changing a cvar's sentinel left every existing tester broken
+
+**Observed:** the owner's Quest 3, with the build that had just fixed the
+upside-down gun, still drew it upside down. *"Everything else seems okay
+about rotation and position though."*
+
+The trims shipped once with `vr_gunRoll` and `vr_gunYaw` defaulting to
+`"-1"` for "detect", and `vr_gunPitch` to `"0"`. They are `CVAR_ARCHIVE`.
+When the sentinel then became the word `"auto"`, every machine that had run
+the previous build already had `seta vr_gunRoll "-1"` in its config - which
+the new code reads as a literal **minus one degree**. Detection silently
+off, on precisely the machines that had been testing.
+
+Reproduced exactly, same packet, same binary:
+
+| config | result |
+|---|---|
+| clean | `roll=180 (auto)`, final gun roll **-13.9** - upright |
+| the tester's archived values | `roll=-1 (set)`, final gun roll **165.1** - upside down |
+
+**Fixed by** `XR_MigrateTrims()` behind a `vr_cfgVersion` stamp: bump the
+version when a default changes in a way an old saved value would defeat, and
+repair it once. **Only values equal to the old default are touched** - a
+migration that discards deliberate tuning is a worse bug than the one it
+fixes. Verified: archived `-1`/`-1`/`0` migrate to auto, while a tuned
+`90`/`12` survives untouched.
+
+**The general lesson.** Changing a default does not reach anyone who has
+already run the software - and in VR the people affected are exactly your
+testers. Worse, the deploy script had been printing *"a q3config already on
+the device overrides changed defaults"* as a reminder for weeks; knowing the
+trap is not the same as having a mechanism for it. Give the config a version
+number before you need one.
+
+### 14. Every log line written before the log file opened was discarded
+
+**Found** while verifying the above: the migration ran correctly and said
+nothing, and `handsfix.txt` reported reading a file into a log that never
+received the message.
+
+`XR_Init` deliberately registers cvars - and now migrates and reads
+`handsfix.txt` - *before* opening `vr.log`, because those must exist even
+with VR off. `XR_Log` returned early when `xr_logFile` was NULL. So the one
+channel off the device was deaf during startup, which is where the
+configuration decisions happen.
+
+**Fixed by** buffering: up to 64 lines are held and flushed immediately
+after the build stamp, so startup still reads in order, with a count if any
+were dropped. Verified: the migration and handsfix lines now appear as lines
+4 to 8 of `vr.log`.
+
+**General - belongs in `docs/general_wxr/`.** If the log is the only channel
+back, it has to work from the first line of initialisation, not from
+whenever the file happens to be opened. Buffer, then flush.

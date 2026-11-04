@@ -37,6 +37,9 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/winlatorxr/xr_api.c
     ${SOURCE_DIR}/winlatorxr/xr_view.c
     ${SOURCE_DIR}/winlatorxr/xr_sync.c
+    ${SOURCE_DIR}/winlatorxr/xr_input.c
+    ${SOURCE_DIR}/winlatorxr/xr_weapon.c
+    ${SOURCE_DIR}/winlatorxr/xr_hud.c
     ${SOURCE_DIR}/sdl/sdl_input.c
     ${SOURCE_DIR}/sdl/sdl_snd.c
     ${CLIENT_PLATFORM_SOURCES}

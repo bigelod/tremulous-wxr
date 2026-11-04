@@ -43,6 +43,9 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 #include "xr_api.h"
 #include "xr_view.h"
 #include "xr_sync.h"
+#include "xr_input.h"
+#include "xr_weapon.h"
+#include "xr_hud.h"
 #include "../qcommon/qcommon.h"
 
 #ifdef _WIN32
@@ -130,8 +133,14 @@ static qboolean     xr_inGame;
 
 static FILE        *xr_logFile;
 
+#define XR_MAX_PENDING_LOG  64
+static char         xr_pending[XR_MAX_PENDING_LOG][1024];
+static int          xr_pendingLines;
+
 // Headset information read from the runtime's `system` file.
 static char         xr_hmdMake[64];
+static float        xr_renderFovX;    // degrees, from the live refdef
+static float        xr_renderFovY;
 static char         xr_hmdModel[64];
 static qboolean     xr_onDevice;
 
@@ -182,17 +191,56 @@ mattered. XR_Init prints the resolved path to the engine log.
 void QDECL XR_Log( const char *fmt, ... )
 {
 	va_list argptr;
+	char    line[1024];
 
+	va_start( argptr, fmt );
+	Q_vsnprintf( line, sizeof( line ), fmt, argptr );
+	va_end( argptr );
+
+	// BEFORE THE FILE EXISTS, HOLD THE LINE. Do not drop it.
+	//
+	// The cvars, the trim migration and handsfix.txt are all set up in
+	// XR_Init BEFORE the log is opened, deliberately -- they have to exist
+	// even with VR off. Every line they logged was therefore thrown away,
+	// so handsfix.txt announced reading a file into a log that never got
+	// the message, and a one-time settings repair happened invisibly. A
+	// diagnostic that only starts working after the interesting part is
+	// over is not a diagnostic.
 	if ( !xr_logFile ) {
+		if ( xr_pendingLines < XR_MAX_PENDING_LOG ) {
+			Q_strncpyz( xr_pending[xr_pendingLines], line,
+						sizeof( xr_pending[0] ) );
+		}
+		xr_pendingLines++;      // keeps counting, so the flush can say so
 		return;
 	}
 
-	va_start( argptr, fmt );
-	vfprintf( xr_logFile, fmt, argptr );
-	va_end( argptr );
-
-	fputc( '\n', xr_logFile );
+	fprintf( xr_logFile, "%s\n", line );
 	fflush( xr_logFile );
+}
+
+/*
+==================
+XR_FlushPendingLog
+
+Emptied the moment the file is open, so startup reads in order.
+==================
+*/
+static void XR_FlushPendingLog( void )
+{
+	int     i, n = xr_pendingLines;
+
+	xr_pendingLines = 0;        // before logging anything, or this recurses
+
+	if ( n > XR_MAX_PENDING_LOG ) {
+		XR_Log( "log: %d lines were held before the file opened, %d kept",
+				n, XR_MAX_PENDING_LOG );
+		n = XR_MAX_PENDING_LOG;
+	}
+
+	for ( i = 0; i < n; i++ ) {
+		XR_Log( "%s", xr_pending[i] );
+	}
 }
 
 /*
@@ -477,6 +525,35 @@ static void XR_ReadSystem( void )
 
 /*
 ==================
+XR_NoteFov
+
+The field of view the engine is actually rendering with, taken from cgame's
+refdef every frame. See the outbound packet for why this is not a setting.
+==================
+*/
+void XR_NoteFov( float fovX, float fovY )
+{
+	xr_renderFovX = fovX;
+	xr_renderFovY = fovY;
+}
+
+/*
+==================
+XR_HmdMake / XR_HmdModel
+==================
+*/
+const char *XR_HmdMake( void )
+{
+	return xr_hmdMake;
+}
+
+const char *XR_HmdModel( void )
+{
+	return xr_hmdModel;
+}
+
+/*
+==================
 XR_OpenSocket
 
 With a protocol whose characteristic failure is total silence, an unchecked
@@ -718,6 +795,21 @@ static qboolean XR_ParsePacket( const char *buf )
 	// Recentre on the very first pose, so the player starts facing their own
 	// forward instead of wherever the runtime's origin happens to point.
 	// `vr_recentre` is still bound for every time after that.
+	//
+	// AlphaTest10 briefly held this back until the head was half a metre
+	// off the floor, on the theory that a first packet reporting a head at
+	// y = 0.006 could not be a real measurement. IT IS A REAL MEASUREMENT.
+	// XrApi positions are HEAD-CENTRED, not floor-relative: the tester
+	// capture in SamplePoseData.txt has the head at y = 0.006 and both
+	// hands at y = -0.23, a palm's drop below it. There is no floor in this
+	// coordinate system to be half a metre above.
+	//
+	// The gate therefore never passed on hardware, xr_centred stayed false,
+	// XR_HandOffset refused, and the gun was drawn with no hand offset at
+	// all -- "stuck to my forehead", with the dominant-hand setting
+	// apparently doing nothing because both hands resolved to the same
+	// place. One wrong assumption about a coordinate system, two symptoms
+	// that look unrelated.
 	if ( xr.packetsReceived == 1 ) {
 		XR_Recentre( );
 	}
@@ -816,6 +908,7 @@ static void XR_SendOut( void )
 	struct sockaddr_in  addr;
 	char                msg[128];
 	xr_socket_t         s;
+	float       fovX, fovY;
 	int                 modeVR;
 
 	s = socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
@@ -851,11 +944,39 @@ static void XR_SendOut( void )
 		modeVR = XR_MODE_VR_OFF;
 	}
 
+	// THE FOV WE SEND HAS TO BE THE FOV WE DREW WITH.
+	//
+	// This field tells the runtime how wide the image it is about to
+	// composite actually is. Claim 104.5 while the engine renders Tremulous'
+	// 90 and the runtime maps the frame onto the display at the wrong scale:
+	// the world then moves at a different rate from the head, which does not
+	// read as "wrong FOV" from inside a headset. It reads as the view
+	// sliding, as rotations that do not come back to where they started --
+	// as drift.
+	//
+	// So the live value from the refdef wins, and the cvars are the fallback
+	// for before the first frame is drawn. XR_NoteFov supplies it.
+	fovX = ( xr_renderFovX > 0.0f ) ? xr_renderFovX : vr_fovX->value;
+	fovY = ( xr_renderFovY > 0.0f ) ? xr_renderFovY : vr_fovY->value;
+
+	if ( vr_verbose->integer && xr_renderFovX > 0.0f ) {
+		static float    loggedX, loggedY;
+
+		if ( fabs( fovX - loggedX ) > 0.5f || fabs( fovY - loggedY ) > 0.5f ) {
+			loggedX = fovX;
+			loggedY = fovY;
+			XR_Log( "fov: sending %.1f x %.1f (what we RENDER) -- runtime "
+					"offered %.1f x %.1f, cvars hold %.1f x %.1f",
+					fovX, fovY, xr.fovX, xr.fovY,
+					vr_fovX->value, vr_fovY->value );
+		}
+	}
+
 	Com_sprintf( msg, sizeof( msg ), "0 0 %d %d %.1f %.1f",
 				 modeVR,
 				 vr_mode3D->integer,
-				 vr_fovX->value,
-				 vr_fovY->value );
+				 fovX,
+				 fovY );
 
 	// Logged when it CHANGES, which is exactly when a MODE_VR or MODE_3D
 	// switch or an FOV tweak happened. Logging it every frame would bury
@@ -902,6 +1023,9 @@ void XR_Init( void )
 	// is CVAR_LATCH -- it needs setting and then a restart.
 	XR_ViewInit( );
 	XR_SyncInit( );
+	XR_InputInit( );
+	XR_WeaponInit( );
+	XR_HudInit( );
 
 	if ( !vr_enable->integer ) {
 		return;
@@ -941,6 +1065,14 @@ void XR_Init( void )
 	XR_Log( "Tremulous WXR -- built " __DATE__ " " __TIME__ " -- XrApi "
 			XR_VERSION_STRING );
 	XR_Log( "engine: %s", Q3_VERSION );
+
+	// Anything the cvar and config setup above wanted to say, now that
+	// there is somewhere to say it. After the build stamp, so line 1 is
+	// still the build stamp.
+	XR_FlushPendingLog( );
+
+	// After the log exists, so the reason is on the record.
+	XR_HideCrosshair( );
 
 	memset( &xr, 0, sizeof( xr ) );
 	xr.hmdQuat[3] = 1.0f;
@@ -995,6 +1127,10 @@ void XR_Frame( void )
 	if ( xr_sockReady ) {
 		XR_Receive();
 	}
+
+	// Buttons, immediately after ingest and before anything else can look at
+	// the state, so a press and its key event land in the same frame.
+	XR_InputFrame( );
 
 	XR_SendOut();
 
@@ -1073,6 +1209,16 @@ const xr_state_t *XR_GetState( void )
 void XR_NoteGameState( qboolean inGame )
 {
 	xr_inGame = inGame;
+}
+
+/*
+==================
+XR_InGame
+==================
+*/
+qboolean XR_InGame( void )
+{
+	return xr_inGame;
 }
 
 qboolean XR_IsEnabled( void )

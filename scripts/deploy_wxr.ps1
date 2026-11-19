@@ -27,6 +27,11 @@
 .EXAMPLE
     ./scripts/deploy_wxr.ps1
     ./scripts/deploy_wxr.ps1 -SkipBuild
+
+.NOTES
+    For every standard destination at once -- the Quest copy folder, the PC
+    test install and Release\DeployReady -- use ./scripts/deploy_all.ps1. This
+    script remains the single-target worker.
 #>
 
 [CmdletBinding()]
@@ -200,6 +205,21 @@ if (Test-Path $autoexec) {
     Write-Host 'Staged scripts/autoexec_alphatest.cfg -> base/autoexec.cfg.' -ForegroundColor Green
 } else {
     Write-Warning "No autoexec at $autoexec (device will print 'couldn't exec autoexec.cfg')"
+}
+
+# Licence and player readme. A build folder that leaves these behind is not
+# distributable, and the readme also carries the credits, install steps and
+# controls. GPL is the full text COPYING.txt points at.
+$docs = @(
+    @( (Join-Path $RepoRoot 'Release/ReadMe.txt'), 'ReadMe.txt' ),
+    @( (Join-Path $RepoRoot 'GPL'),                'GPL' ),
+    @( (Join-Path $RepoRoot 'COPYING.txt'),        'COPYING.txt' )
+)
+foreach ($doc in $docs) {
+    if (Test-Path $doc[0]) {
+        Copy-Item $doc[0] -Destination (Join-Path $Dest $doc[1]) -Force
+        $staged.Add((Join-Path $Dest $doc[1]))
+    }
 }
 
 # Game data. Big and unchanging, so only once.

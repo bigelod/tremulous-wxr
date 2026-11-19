@@ -32,6 +32,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "../client/client.h"
 #include "../sys/sys_local.h"
+#include "../winlatorxr/xr_api.h"
+#include "../winlatorxr/xr_menu.h"
 
 #if !SDL_VERSION_ATLEAST(2, 0, 17)
 #define KMOD_SCROLL KMOD_RESERVED
@@ -1072,6 +1074,58 @@ static void IN_JoyMove( void )
 
 /*
 ===============
+IN_XRBlockDesktopKey
+
+The VR controls synthesise their own key events with Com_QueueEvent, which
+does NOT pass through SDL. This filter therefore cannot touch them. What it
+does touch is everything else: a physical keyboard, and the runtime's own
+key/mouse emulation, which arrive as SDL events.
+
+Blocked only while the player is actually in a match, with no console, chat
+field or QVM menu holding the keyboard, and with the VR settings overlay
+closed. In the title screen and every menu, all keyboard and mouse input is
+allowed -- otherwise a player who joins a server is locked out of the very
+menus they need. ESC is never blocked: WinlatorXR turns the left controller
+menu button into ESC, and that must keep working everywhere.
+
+Only the DOWN edges are blocked. A key held while a menu closed is allowed to
+send its UP, so it cannot stick down when play starts.
+
+This identifies physical input by the layer it arrives on, not by guessing
+inside CL_KeyEvent. That distinction is the whole reason the filter lives
+here.
+===============
+*/
+static qboolean IN_XRBlockDesktopKey( int key )
+{
+	if ( !XR_IsEnabled( ) || !XR_InGame( ) || XR_MenuIsOpen( ) ) {
+		return qfalse;
+	}
+
+	// Console, chat, the in-game menu and the QVM UI all take the keyboard.
+	if ( Key_GetCatcher( ) != 0 ) {
+		return qfalse;
+	}
+
+	if ( !Cvar_VariableIntegerValue( "vr_blockDesktopInput" ) ) {
+		return qfalse;
+	}
+
+	switch ( key ) {
+	case 'a': case 'b': case 'x': case 'y':
+	case K_LEFTARROW: case K_RIGHTARROW:
+	case K_UPARROW:   case K_DOWNARROW:
+	case K_SPACE:     case K_ENTER: case K_KP_ENTER:
+	case K_MOUSE1:    case K_MOUSE2:
+		return qtrue;
+
+	default:
+		return qfalse;
+	}
+}
+
+/*
+===============
 IN_ProcessEvents
 ===============
 */
@@ -1093,7 +1147,11 @@ static void IN_ProcessEvents( void )
 					break;
 
 				if( ( key = IN_TranslateSDLToQ3Key( &e.key.keysym, qtrue ) ) )
+				{
+					if ( IN_XRBlockDesktopKey( key ) )
+						break;
 					Com_QueueEvent( in_eventTime, SE_KEY, key, qtrue, 0, NULL );
+				}
 
 				if( key == K_BACKSPACE )
 					Com_QueueEvent( in_eventTime, SE_CHAR, CTRL('h'), 0, 0, NULL );
@@ -1182,6 +1240,12 @@ static void IN_ProcessEvents( void )
 						case SDL_BUTTON_X2:     b = K_MOUSE5;     break;
 						default:                b = K_AUX1 + ( e.button.button - SDL_BUTTON_X2 + 1 ) % 16; break;
 					}
+
+					if ( e.type == SDL_MOUSEBUTTONDOWN
+						 && IN_XRBlockDesktopKey( b ) ) {
+						break;
+					}
+
 					Com_QueueEvent( in_eventTime, SE_KEY, b,
 						( e.type == SDL_MOUSEBUTTONDOWN ? qtrue : qfalse ), 0, NULL );
 				}

@@ -20,6 +20,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 #include "client.h"
+#include "../winlatorxr/xr_menu.h"
 
 /*
 
@@ -1315,6 +1316,14 @@ Called by the system for both key up and key down events
 ===================
 */
 void CL_KeyEvent (int key, qboolean down, unsigned time) {
+	// The VR settings overlay is engine-side, so it sees keys before the
+	// console, the QVM UI and the bindings. ESC is deliberately consumed
+	// while it is open: it closes the overlay rather than opening the game's
+	// pause menu behind it.
+	if ( XR_MenuKeyEvent( key, down ) ) {
+		return;
+	}
+
 	if( down )
 		CL_KeyDownEvent( key, time );
 	else

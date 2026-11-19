@@ -62,10 +62,20 @@ void        XR_AdjustUsercmdAngles( vec3_t viewangles );
 // already contains the head's yaw via the usercmd path.
 void        XR_AdjustRefdef( refdef_t *rd, float bodyYaw );
 
-// Logged on change. viewheight is per class in this game -- twelve classes,
-// twelve bodies -- so it is the signal that D9's per-class world scale will
-// key off, and the cheapest proxy for "the player changed class" that does
-// not drag the game module's headers into the client.
-void        XR_NoteViewheight( int viewheight );
+// Logged on class change. viewheight is per class in this game -- twelve
+// classes, twelve bodies -- and so is the world scale: a Dretch and a Tyrant
+// do not share one units-per-metre constant. classIndex is
+// playerState.stats[STAT_CLASS], passed in numerically because the client may
+// not include the game module's headers.
+//
+// XR_STAT_CLASS is bg_public.h's STAT_CLASS ordinal, spelled numerically for
+// the same reason xr_weapon spells STAT_TEAM: no game headers in the engine.
+#define XR_STAT_CLASS   5
+void        XR_NoteClass( int classIndex, int viewheight );
+
+// Status for the VR menu. The scale is the DERIVED one for the current
+// class, not the vr_worldScale cvar.
+float       XR_CurrentWorldScale( void );
+const char  *XR_CurrentClassName( void );
 
 #endif // __XR_VIEW_H

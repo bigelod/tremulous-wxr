@@ -40,6 +40,7 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/winlatorxr/xr_input.c
     ${SOURCE_DIR}/winlatorxr/xr_weapon.c
     ${SOURCE_DIR}/winlatorxr/xr_hud.c
+    ${SOURCE_DIR}/winlatorxr/xr_menu.c
     ${SOURCE_DIR}/sdl/sdl_input.c
     ${SOURCE_DIR}/sdl/sdl_snd.c
     ${CLIENT_PLATFORM_SOURCES}

@@ -102,14 +102,17 @@ qboolean        XR_IsEnabled( void );
 // with the hands UPSIDE DOWN, so this is what the gun's roll correction hangs
 // off. Both default to META / QUEST 3 when the `system` file is absent, which
 // is the desktop case.
+const char     *XR_HmdMake( void );
+const char     *XR_HmdModel( void );
+
 // The FOV the engine is really drawing with. It is sent to the runtime in
 // place of any configured value, because the runtime uses it to scale the
 // frame onto the display -- and a frame composited at the wrong scale reads
 // as the view drifting when you turn your head, not as a wrong FOV.
 void            XR_NoteFov( float fovX, float fovY );
 
-const char     *XR_HmdMake( void );
-const char     *XR_HmdModel( void );
+// Read-only, for the VR menu. Zero before the first frame.
+void            XR_GetRenderedFov( float *fovX, float *fovY );
 
 // Tell the transport whether the player is actually PLAYING, as opposed to
 // sitting in a menu, connecting or loading. Drives MODE_VR: the runtime owns

@@ -75,6 +75,7 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 #include "xr_api.h"
 #include "xr_view.h"
 #include "xr_weapon.h"
+#include "xr_menu.h"
 #include "../client/client.h"
 
 // Bool-string indices. Named rather than inlined, because a bare 18 in the
@@ -333,6 +334,49 @@ static void XR_LogButtons( void )
 
 /*
 ==================
+XR_LogBoolEdges
+
+The census line: every index that changed, by number, including controls the
+action table does not map. The decoded line above says what we THINK the
+indices mean; this one says which bits actually moved, so a census can be
+read without counting characters in the raw string and an unmapped index is
+still visible.
+
+Suppressed on the first non-empty string: with no previous packet every
+pressed bit would read as a fresh press, which is noise rather than an edge.
+==================
+*/
+static void XR_LogBoolEdges( const char *prev, const xr_state_t *s )
+{
+	char    line[768];
+	int     i;
+	int     prevLen = (int)strlen( prev );
+
+	if ( !prev[0] ) {
+		return;
+	}
+
+	Q_strncpyz( line, "", sizeof( line ) );
+
+	for ( i = 0; i < s->numBools; i++ ) {
+		qboolean    now = ( s->bools[i] == 'T' ) ? qtrue : qfalse;
+		qboolean    was = ( i < prevLen && prev[i] == 'T' ) ? qtrue : qfalse;
+
+		if ( now == was ) {
+			continue;
+		}
+
+		Q_strcat( line, sizeof( line ),
+				  va( "idx %d %s  ", i, now ? "down" : "up" ) );
+	}
+
+	if ( line[0] ) {
+		XR_Log( "input: %s", line );
+	}
+}
+
+/*
+==================
 XR_ReleaseActions
 
 The nine mapped actions only. Separate from the menu click, because the two
@@ -434,6 +478,18 @@ void XR_InputFrame( void )
 		return;
 	}
 
+	// The VR settings menu owns the controller while it is up. It returns
+	// true on the frame it closes too, so the button that closed it cannot
+	// fall through into the game on the same frame.
+	if ( XR_MenuFrame( ) ) {
+		// A key held when the menu opened must not stay down in the game for
+		// the whole time it is open: release the synthesised keys and the
+		// menu click, then let the next real press start them again.
+		XR_ReleaseActions( );
+		XR_ReleaseMenuClick( );
+		return;
+	}
+
 	// Input only while actually playing. The menus are flat 2D screens driven
 	// by the mouse (vr_autoMode drops MODE_VR for exactly that reason), and
 	// synthesising 'c', 'r' or TAB into a menu would type into text fields
@@ -472,6 +528,9 @@ void XR_InputFrame( void )
 	XR_ReleaseMenuClick( );
 
 	if ( vr_verbose->integer && strcmp( s->bools, lastBools ) != 0 ) {
+		// Edges first, then the decode: "what moved" is ground truth, the
+		// names are our belief about it.
+		XR_LogBoolEdges( lastBools, s );
 		XR_LogButtons( );
 		Q_strncpyz( lastBools, s->bools, sizeof( lastBools ) );
 	}
@@ -586,6 +645,11 @@ void XR_StickMove( usercmd_t *cmd )
 		return;
 	}
 
+	// The menu owns the sticks while it is up.
+	if ( XR_MenuIsOpen() ) {
+		return;
+	}
+
 	s = XR_GetState();
 	if ( !s->valid || ( !XR_InGame() && !vr_inputAlways->integer ) ) {
 		return;
@@ -681,6 +745,11 @@ void XR_StickLook( int msec )
 		return;
 	}
 
+	// The menu owns the sticks while it is up.
+	if ( XR_MenuIsOpen() ) {
+		return;
+	}
+
 	s = XR_GetState();
 	if ( !s->valid || ( !XR_InGame() && !vr_inputAlways->integer ) ) {
 		return;
@@ -750,6 +819,13 @@ void XR_InputInit( void )
 	vr_turnEnable    = Cvar_Get( "vr_turnEnable",    "1",    CVAR_ARCHIVE );
 
 	vr_verbose       = Cvar_Get( "vr_verbose",       "0",    CVAR_ARCHIVE );
+
+	// Blocks physical keyboard/mouse events while in a match, so the VR
+	// controls are the only source of aim, fire and movement. Synthetic
+	// controller keys are injected above SDL and are unaffected; ESC always
+	// passes because the runtime turns the left menu button into it.
+	// Set 0 to use a real keyboard and mouse while testing on the desktop.
+	Cvar_Get( "vr_blockDesktopInput", "1", CVAR_ARCHIVE );
 
 	// MOUSE1 because that is what a 2D menu expects, and because it is also
 	// Tremulous's +attack -- which is what the player needs to press to spawn

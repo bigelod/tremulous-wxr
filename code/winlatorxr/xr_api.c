@@ -46,6 +46,7 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 #include "xr_input.h"
 #include "xr_weapon.h"
 #include "xr_hud.h"
+#include "xr_menu.h"
 #include "../qcommon/qcommon.h"
 
 #ifdef _WIN32
@@ -539,6 +540,24 @@ void XR_NoteFov( float fovX, float fovY )
 
 /*
 ==================
+XR_GetRenderedFov
+
+Read-only, for the VR menu's status line. Zero means "no frame yet", which
+is when the outbound packet falls back to vr_fovX / vr_fovY.
+==================
+*/
+void XR_GetRenderedFov( float *fovX, float *fovY )
+{
+	if ( fovX ) {
+		*fovX = xr_renderFovX;
+	}
+	if ( fovY ) {
+		*fovY = xr_renderFovY;
+	}
+}
+
+/*
+==================
 XR_HmdMake / XR_HmdModel
 ==================
 */
@@ -1026,6 +1045,7 @@ void XR_Init( void )
 	XR_InputInit( );
 	XR_WeaponInit( );
 	XR_HudInit( );
+	XR_MenuInit( );
 
 	if ( !vr_enable->integer ) {
 		return;

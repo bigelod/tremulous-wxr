@@ -143,7 +143,9 @@ a week.
 Things worth instrumenting on day one:
 
 - the raw inbound packet, verbatim, every few seconds
-- the button bool string on every press
+- the button bool string on every press, **and the raw bit indices that
+  changed alongside their decoded names** - a wrong decode table cannot be
+  read from the names alone, and an unmapped index is invisible in them
 - the camera and hand transforms after conversion
 - window, surface and render dimensions when they change
 - a model or node dump, once, if the game has art you must attach to
@@ -188,6 +190,19 @@ Then your build script can refuse to deploy a binary older than the newest
 source file. Shogo's build guard caught a stale build being tested as new,
 which is a failure mode that wastes a whole session and is invisible without
 the check. Hash the deployed file and compare.
+
+### When a game hangs before it writes its log, look for a modal dialog
+
+A process that stops after its first few lines and never reaches the code
+that opens the log may be waiting on a dialog you cannot see from the shell.
+id Tech 3 engines, for example, leave a PID file behind when a run is killed
+and show an **"Abnormal Exit"** prompt on the next start, offering safe video
+settings. From a script it looks exactly like a startup hang: the process is
+alive, CPU is idle, and nothing is printed. Check the game's window title, or
+delete the stale PID file, before concluding that the build is broken.
+
+This is the same lesson as the log stamp, one layer down: **the absence of
+output is a symptom, not a diagnosis.**
 
 ### Ask the human for a screenshot *with the controller overlay on*
 
@@ -235,6 +250,25 @@ Expect the same split under another name in any engine where the server can
 reorient the player. The symptom is subtle and constant: a hand drawn beside
 the wrong hip, a lean that goes sideways - everything off by the map's spawn
 angle, which is why it never shows up standing at yaw 0 in a test harness.
+
+### One world scale per body, not per game
+
+If the game has more than one playable body, a single units-per-metre
+constant is right for exactly one of them. Derive the scale from the active
+body's eye height above its own feet (`viewheight - mins[2]` in an id Tech
+game) against the player's real eye height, and anchor the derivation on the
+body the first constant was tuned for, so the number that already works keeps
+its meaning. Add a switch that pins the single constant, because a desktop
+test that must not move when the body changes wants the old behaviour.
+
+Tremulous WXR is the worked example: twelve classes from a 15-unit Dretch to
+an 86-unit Tyrant against a 48-unit human, and one 30 u/m constant that was
+right for one of them. Deriving per class gives 9.4 to 53.8 u/m. The owner's
+choice was to **preserve apparent body size** - a Tyrant's world looks
+smaller, a Dretch's larger - because the class difference is the point and
+comfort options can be layered on top later. The other choice, one fixed
+scale so the player always feels human-sized, is legitimate for a comfort-first
+port; make it deliberately, not by leaving a constant in place.
 
 ### If you compensate for something, test it against a MOVING input
 

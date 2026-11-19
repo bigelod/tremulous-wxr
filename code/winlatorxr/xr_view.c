@@ -58,14 +58,93 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 #include "xr_view.h"
 #include "xr_weapon.h"
 #include "xr_api.h"
+#include "xr_menu.h"
 #include "../qcommon/qcommon.h"
 
 static cvar_t   *vr_enable;
 static cvar_t   *vr_verbose;
-static cvar_t   *vr_worldScale;
+static cvar_t   *vr_worldScale;         // human reference, units per metre
+static cvar_t   *vr_classScale;         // derive the other eleven from it
+static cvar_t   *vr_fovScale;           // comfort: <= 1, never wider
 static cvar_t   *vr_posTracking;
 static cvar_t   *vr_rollEnable;
 static cvar_t   *vr_pitchEnable;
+
+/*
+==================
+Per-class body scale
+
+D9 in PROJECT_PLAN.md: twelve classes, twelve bodies, and one units-per-metre
+constant is wrong for eleven of them. "Preserve the apparent body size" is
+the owner's decision (16 Nov 2026): the player's real eye height always maps
+to the active class's eye height above its own feet, so a Tyrant's world is
+smaller and a Dretch's is larger. The alternative -- one fixed world scale,
+feeling 2.8 m tall as a Tyrant and knee-high as a Dretch -- was rejected: the
+difference between the classes is the point, and comfort options can be
+layered on top later rather than averaged away now.
+
+eyeAboveFeet is `viewheight - mins[2]` from
+assets/configs/classes/*.cfg, which is the class's standing eye height above
+the bottom of its bounding box in engine units:
+
+    human_base   viewheight 24, mins z -24  -> 48
+    level0       viewheight  0, mins z -15  -> 15   (Dretch)
+    level4       viewheight 64, mins z -22  -> 86   (Tyrant)
+
+The human row is the anchor: 48 units at a 1.6 m eye height is where the
+existing 30 u/m default came from, so `vr_worldScale 30` keeps meaning what
+it always meant and the other classes are derived from it.
+
+Why a table here rather than reading the configs: mapping a class INDEX to a
+config file is game-module knowledge, and a pure server replaces the game
+module. A mod that renumbers classes reads the wrong row; that changes how
+big the world feels, not whether it renders, and the out-of-range fallback is
+the human row. Spelled numerically with the PCL_* names in comments, exactly
+as xr_weapon spells STAT_TEAM and TEAM_HUMANS.
+==================
+*/
+static const struct {
+	const char  *name;
+	int         eyeAboveFeet;
+} xr_classes[] = {
+	{ "spectator",      48 },   // PCL_NONE -- no body to scale; keep human
+	{ "granger",        20 },   // PCL_ALIEN_BUILDER0
+	{ "granger upg",    20 },   // PCL_ALIEN_BUILDER0_UPG
+	{ "dretch",         15 },   // PCL_ALIEN_LEVEL0
+	{ "basilisk",       18 },   // PCL_ALIEN_LEVEL1
+	{ "basilisk upg",   21 },   // PCL_ALIEN_LEVEL1_UPG
+	{ "marauder",       30 },   // PCL_ALIEN_LEVEL2
+	{ "marauder upg",   34 },   // PCL_ALIEN_LEVEL2_UPG
+	{ "dragoon",        47 },   // PCL_ALIEN_LEVEL3
+	{ "dragoon upg",    56 },   // PCL_ALIEN_LEVEL3_UPG
+	{ "tyrant",         86 },   // PCL_ALIEN_LEVEL4
+	{ "human",          48 },   // PCL_HUMAN
+	{ "battlesuit",     67 }    // PCL_HUMAN_BSUIT
+};
+
+#define XR_NUM_CLASSES ((int)( sizeof( xr_classes ) / sizeof( xr_classes[0] ) ))
+#define XR_HUMAN_EYE   48          // the anchor the 30 u/m default came from
+
+static int      xr_classIndex = -1;
+static int      xr_classEye = XR_HUMAN_EYE;
+
+/*
+==================
+XR_WorldScale
+
+Engine units per metre for the class being played. With vr_classScale 0 this
+is the old single constant, which is still the right thing for desktop tests
+that should not move when the class changes.
+==================
+*/
+static float XR_WorldScale( void )
+{
+	if ( !vr_classScale->integer ) {
+		return vr_worldScale->value;
+	}
+
+	return vr_worldScale->value * ( (float)xr_classEye / (float)XR_HUMAN_EYE );
+}
 
 static float    xr_centreYaw;           // degrees, Q3 frame
 static vec3_t   xr_centrePos;           // metres, XR frame
@@ -216,7 +295,7 @@ qboolean XR_HandOffset( int hand, vec3_t offset )
 	d[1] = s->handPos[hand][1] - xr_centrePos[1];
 	d[2] = s->handPos[hand][2] - xr_centrePos[2];
 
-	scale = vr_worldScale->value;
+	scale = XR_WorldScale();
 
 	// (x, y, z)_xr -> (-z, -x, y)_q3, metres to engine units.
 	offset[0] = -d[2] * scale;
@@ -274,7 +353,7 @@ static qboolean XR_HeadOffset( vec3_t offset )
 	d[1] = s->hmdPos[1] - xr_centrePos[1];
 	d[2] = s->hmdPos[2] - xr_centrePos[2];
 
-	scale = vr_worldScale->value;
+	scale = XR_WorldScale();
 
 	// (x, y, z)_xr -> (-z, -x, y)_q3, metres to engine units.
 	offset[0] = -d[2] * scale;
@@ -334,6 +413,15 @@ void XR_AdjustUsercmdAngles( vec3_t viewangles )
 	vec3_t  gun;
 
 	if ( !XR_IsEnabled() ) {
+		return;
+	}
+
+	// While the VR menu is up, the aim is frozen: no head yaw/pitch is sent,
+	// so the view does not swing while the player reads a slider. The latch
+	// is cleared too, so the render hook does not try to correct a gun aim
+	// that was never sent.
+	if ( XR_MenuIsOpen() ) {
+		xr_sentWasGun = qfalse;
 		return;
 	}
 
@@ -538,6 +626,19 @@ void XR_AdjustRefdef( refdef_t *rd, float bodyYaw )
 		VectorClear( rotated );
 	}
 
+	// ---- FOV scale, comfort only ----------------------------------------
+	//
+	// A narrower FOV is a comfort choice; a wider one would be a gameplay
+	// advantage, which the no-advantage rule forbids. So the control is
+	// clamped to 1.0 at the top, and the outbound FOV is noted AFTER this
+	// (cl_cgame.c) so the runtime is still told what was really drawn.
+	if ( vr_fovScale->value < 1.0f ) {
+		float   s = Com_Clamp( 0.5f, 1.0f, vr_fovScale->value );
+
+		rd->fov_x = Com_Clamp( 1.0f, 179.0f, rd->fov_x * s );
+		rd->fov_y = Com_Clamp( 1.0f, 179.0f, rd->fov_y * s );
+	}
+
 	// THE number behind "why is rotating the controller rotating my head?".
 	// camYaw is where the camera ended up pointing; expected is where the
 	// head alone says it should be. If camYaw tracks gun y, the gun has got
@@ -588,28 +689,57 @@ void XR_AdjustRefdef( refdef_t *rd, float bodyYaw )
 
 /*
 ==================
-XR_NoteViewheight
+XR_NoteClass
 ==================
 */
-void XR_NoteViewheight( int viewheight )
+void XR_NoteClass( int classIndex, int viewheight )
 {
-	static int  last = -9999;
+	static int  lastClass = -9999;
 
-	if ( viewheight == last ) {
+	// Class change, not viewheight change: viewheight moves on every crouch,
+	// and a line per crouch would bury the log. The class is the thing the
+	// scale hinges on.
+	if ( classIndex == lastClass ) {
 		return;
 	}
-	last = viewheight;
+	lastClass = classIndex;
+
+	if ( classIndex >= 0 && classIndex < XR_NUM_CLASSES ) {
+		xr_classIndex = classIndex;
+		xr_classEye = xr_classes[classIndex].eyeAboveFeet;
+	} else {
+		xr_classIndex = -1;
+		xr_classEye = XR_HUMAN_EYE;
+	}
 
 	if ( !XR_IsEnabled() ) {
 		return;
 	}
 
-	// A human_base eye sits 48 units above the feet, which is where the 30
-	// units/metre default comes from. A Dretch or a Tyrant does not, so this
-	// line is the evidence for what the per-class scale should become.
-	XR_Log( "class: viewheight=%d (worldScale %.1f u/m is derived for a "
-			"HUMAN and is wrong for the other eleven classes)",
-			viewheight, vr_worldScale->value );
+	XR_Log( "class: %s (idx %d) viewheight=%d eye=%d -> worldScale %.2f u/m "
+			"(human %.1f, classScale %d)",
+			xr_classIndex >= 0 ? xr_classes[classIndex].name : "unknown",
+			classIndex, viewheight, xr_classEye, XR_WorldScale(),
+			vr_worldScale->value, vr_classScale->integer );
+}
+
+/*
+==================
+XR_CurrentWorldScale / XR_CurrentClassName
+
+Read-only accessors for the VR menu's status lines. They deliberately report
+the DERIVED scale, not the cvar, because "what is the player's metre worth
+right now" is the question the tester is actually asking.
+==================
+*/
+float XR_CurrentWorldScale( void )
+{
+	return XR_WorldScale();
+}
+
+const char *XR_CurrentClassName( void )
+{
+	return ( xr_classIndex >= 0 ) ? xr_classes[xr_classIndex].name : "unknown";
 }
 
 /*
@@ -622,16 +752,21 @@ void XR_ViewInit( void )
 	vr_enable  = Cvar_Get( "vr_enable",  "0", CVAR_ARCHIVE | CVAR_LATCH );
 	vr_verbose = Cvar_Get( "vr_verbose", "0", CVAR_ARCHIVE );
 
-	// Engine units per metre. DERIVED, not guessed: human_base.cfg puts the
-	// eye at viewheight 24 with mins[2] -24, so 48 units above the feet. At a
-	// 1.6 m human eye height that is 30 units/metre.
+	// Engine units per metre, for a HUMAN. DERIVED, not guessed:
+	// human_base.cfg puts the eye at viewheight 24 with mins[2] -24, so 48
+	// units above the feet. At a 1.6 m human eye height that is 30 u/m.
 	//
-	// This is a placeholder for ONE class. D9 in PROJECT_PLAN.md is explicit
-	// that twelve classes have twelve bodies and a single constant is wrong
-	// for eleven of them -- a Dretch and a Tyrant do not share a scale. The
-	// per-class derivation is stage 10; this cvar exists so stage 6 can be
-	// tested as a human without pretending the problem is solved.
+	// This is the reference, not the whole answer. vr_classScale derives the
+	// other classes from it through xr_classes above: a Tyrant gets
+	// 30 * 86/48 = 53.75 u/m, a Dretch 30 * 15/48 = 9.375. Set
+	// vr_classScale 0 to pin every class to this number, which is what a
+	// desktop test that must not move when the class changes wants.
 	vr_worldScale  = Cvar_Get( "vr_worldScale",  "30", CVAR_ARCHIVE );
+	vr_classScale  = Cvar_Get( "vr_classScale",  "1",  CVAR_ARCHIVE );
+
+	// Comfort only, and clamped <= 1 when applied. A wider FOV than the
+	// class allows would be a gameplay advantage; narrower is a preference.
+	vr_fovScale    = Cvar_Get( "vr_fovScale",    "1",  CVAR_ARCHIVE );
 
 	// Orientation first, position second: FIRST_STEPS stage 6 is explicit
 	// that getting looking-around right with fewer variables comes first. Run
@@ -645,8 +780,10 @@ void XR_ViewInit( void )
 	Cmd_AddCommand( "vr_recenter", XR_Recentre_f );   // both spellings
 
 	if ( vr_enable->integer ) {
-		XR_Log( "view: worldScale=%.1f units/m posTracking=%d roll=%d pitch=%d",
-				vr_worldScale->value, vr_posTracking->integer,
+		XR_Log( "view: worldScale=%.1f u/m (human reference) classScale=%d "
+				"fovScale=%.2f posTracking=%d roll=%d pitch=%d",
+				vr_worldScale->value, vr_classScale->integer,
+				vr_fovScale->value, vr_posTracking->integer,
 				vr_rollEnable->integer, vr_pitchEnable->integer );
 	}
 }

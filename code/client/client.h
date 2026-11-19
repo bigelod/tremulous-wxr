@@ -576,6 +576,11 @@ void	SCR_DebugGraph (float value);
 int		SCR_GetBigStringWidth( const char *str );	// returns in virtual 640x480 coordinates
 
 void	SCR_AdjustFrom640( float *x, float *y, float *w, float *h );
+// x, y, size and the string are in 640x480 virtual space. Used by the VR
+// menu, which draws in the client rather than in a QVM the server replaces.
+void	SCR_DrawStringExt( int x, int y, float size, const char *string,
+						   float *setColor, qboolean forceColor,
+						   qboolean noColorEscape );
 void	SCR_FillRect( float x, float y, float width, float height, 
 					 const float *color );
 void	SCR_DrawPic( float x, float y, float width, float height, qhandle_t hShader );

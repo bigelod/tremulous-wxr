@@ -24,6 +24,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "client.h"
 #include "../winlatorxr/xr_view.h"
 #include "../winlatorxr/xr_input.h"
+#include "../winlatorxr/xr_menu.h"
 
 unsigned	frame_msec;
 int			old_com_frameTime;
@@ -646,6 +647,17 @@ usercmd_t CL_CreateCmd( void ) {
 		if ( cl_debugMove->integer == 2 ) {
 			SCR_DebugGraph( fabs(cl.viewangles[PITCH] - oldAngles[PITCH]) );
 		}
+	}
+
+	// The VR settings menu suppresses the usercmd rather than pausing:
+	// multiplayer cannot pause. The player stands still and does not fire
+	// while reading it, and a held trigger from the moment it opened cannot
+	// leak a shot into the game.
+	if ( XR_MenuIsOpen( ) ) {
+		cmd.buttons = 0;
+		cmd.forwardmove = 0;
+		cmd.rightmove = 0;
+		cmd.upmove = 0;
 	}
 
 	return cmd;

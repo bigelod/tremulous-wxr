@@ -607,13 +607,8 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 				float		bodyYaw;
 
 				vrRefdef = *(refdef_t *)VMA(1);
-				XR_NoteViewheight( cl.snap.ps.viewheight );
-
-				// What the runtime is told the frame's FOV is has to be what
-				// the frame was actually drawn with, or it composites at the
-				// wrong scale -- which feels like the view drifting as you
-				// turn, not like a wrong FOV.
-				XR_NoteFov( vrRefdef.fov_x, vrRefdef.fov_y );
+				XR_NoteClass( cl.snap.ps.stats[XR_STAT_CLASS],
+							  cl.snap.ps.viewheight );
 
 				// THE BODY'S YAW IN THE WORLD, which is not cl.viewangles.
 				//
@@ -641,6 +636,13 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 				XR_EmitHandWeapon( &vrRefdef, bodyYaw );
 
 				XR_AdjustRefdef( &vrRefdef, bodyYaw );
+
+				// After every adjustment, because this is the FOV the runtime
+				// must use to composite: it includes the comfort scale. A
+				// value noted before the adjustment would be a frame drawn at
+				// one scale and composited at another -- which reads as drift.
+				XR_NoteFov( vrRefdef.fov_x, vrRefdef.fov_y );
+
 				re.RenderScene( &vrRefdef );
 			} else {
 				re.RenderScene( VMA(1) );

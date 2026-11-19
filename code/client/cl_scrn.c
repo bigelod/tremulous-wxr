@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "client.h"
 #include "../winlatorxr/xr_sync.h"
+#include "../winlatorxr/xr_menu.h"
 
 qboolean	scr_initialized;		// ready to draw
 
@@ -555,6 +556,10 @@ void SCR_UpdateScreen( void ) {
 		} else {
 			SCR_DrawScreenField( STEREO_CENTER );
 		}
+
+		// The VR settings overlay. Drawn after the world and the HUD, and
+		// before the sync pixel, which must remain the last thing written.
+		XR_MenuDraw( );
 
 		// Stage 5. LAST, after the world and after the HUD, immediately
 		// before the buffer swap. Anything drawn after this overwrites the

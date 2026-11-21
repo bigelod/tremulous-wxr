@@ -101,6 +101,7 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 
 static cvar_t   *vr_handGun;        // master switch for the whole scheme
 static cvar_t   *vr_handAimOnFire;  // shots follow the hand while firing
+static cvar_t   *vr_gunAimAlign;    // prop points where the shots go
 static cvar_t   *vr_gunForward;     // hand-space trim, engine units
 static cvar_t   *vr_gunRight;
 static cvar_t   *vr_gunUp;
@@ -570,6 +571,7 @@ void XR_EmitHandWeapon( const refdef_t *cgameRefdef, float bodyYaw )
 	vec3_t          srcAxis[3];
 	vec3_t          handOffset, rotated, gunOrigin;
 	vec3_t          rootRel;
+	qboolean        aimAlign;
 	int             i, j;
 
 	if ( !xr_numFpEnts ) {
@@ -596,6 +598,18 @@ void XR_EmitHandWeapon( const refdef_t *cgameRefdef, float bodyYaw )
 	gunAngles[YAW] = AngleNormalize180( gunAngles[YAW] + bodyYaw );
 	gunAngles[ROLL] = AngleNormalize180( gunAngles[ROLL] );
 	AnglesToAxis( gunAngles, gunAxis );
+
+	// SHOULD THE PROP POINT WHERE THE SHOTS GO?
+	//
+	// The aim is the head except while firing, when it is the hand. A prop
+	// oriented to the hand therefore points away from the crosshair whenever
+	// the hand is not held perfectly forward -- and some weapon models (the
+	// Blaster among them) make that obvious. With this on, the model keeps
+	// cgame's OWN orientation (which points down the aim) and only its
+	// POSITION follows the hand. While firing, the hand is the aim, so the
+	// hand orientation is used as before. vr_gunAimAlign 0 restores the old
+	// "prop follows the hand's rotation too" behaviour.
+	aimAlign = ( vr_gunAimAlign->integer && !XR_GunAimActive() ) ? qtrue : qfalse;
 
 	// Where the hand is. Same construction as the head's positional offset
 	// in XR_AdjustRefdef -- a room displacement, rotated by the BODY's yaw,
@@ -633,38 +647,44 @@ void XR_EmitHandWeapon( const refdef_t *cgameRefdef, float bodyYaw )
 	// roughly double the intended distance and in a direction that no longer
 	// means anything, because the frame it was measured in has been replaced.
 	//
-	// Subtracting the FIRST captured entity's offset, rather than each
-	// entity's own, is the point: the set is a rigid assembly of hands, gun,
-	// barrel and flash hung off each other's tags. Remove one shared
-	// displacement and the root lands exactly on the hand while every
-	// relative position inside the assembly survives untouched.
-	VectorSubtract( xr_fpEnts[0].origin, cgameRefdef->vieworg, rootRel );
+	// Everything after this is relative to the root entity's own origin, so
+	// the rigid assembly of hands, gun, barrel and flash keeps its shape.
+	VectorCopy( xr_fpEnts[0].origin, rootRel );
 
 	for ( i = 0; i < xr_numFpEnts; i++ ) {
 		refEntity_t *e = &xr_fpEnts[i];
 		vec3_t      rel, newRel;
 
-		// Position, relative to cgame's camera and then to the root,
-		// re-expressed about the gun.
-		VectorSubtract( e->origin, cgameRefdef->vieworg, rel );
-		VectorSubtract( rel, rootRel, rel );
-		XR_ReFrame( srcAxis, gunAxis, rel, newRel );
-		VectorAdd( gunOrigin, newRel, e->origin );
+		VectorSubtract( e->origin, rootRel, rel );
 
-		// Orientation, the same way, axis vector by axis vector.
-		for ( j = 0; j < 3; j++ ) {
-			vec3_t  a;
+		if ( aimAlign ) {
+			// Position at the hand; orientation left exactly as cgame
+			// built it, which is down the aim the shots use.
+			VectorAdd( gunOrigin, rel, e->origin );
+		} else {
+			// Old behaviour: the whole assembly is also rotated from
+			// cgame's camera frame into the gun's frame.
+			XR_ReFrame( srcAxis, gunAxis, rel, newRel );
+			VectorAdd( gunOrigin, newRel, e->origin );
 
-			VectorCopy( e->axis[j], a );
-			XR_ReFrame( srcAxis, gunAxis, a, e->axis[j] );
+			for ( j = 0; j < 3; j++ ) {
+				vec3_t  a;
+
+				VectorCopy( e->axis[j], a );
+				XR_ReFrame( srcAxis, gunAxis, a, e->axis[j] );
+			}
+
+			// oldorigin carries the lerp origin for some entities; leaving it
+			// in the old frame makes a moving gun smear between two places.
+			VectorSubtract( e->oldorigin, rootRel, rel );
+			XR_ReFrame( srcAxis, gunAxis, rel, newRel );
+			VectorAdd( gunOrigin, newRel, e->oldorigin );
 		}
 
-		// oldorigin carries the lerp origin for some entities; leaving it in
-		// the old frame makes a moving gun smear between two places.
-		VectorSubtract( e->oldorigin, cgameRefdef->vieworg, rel );
-		VectorSubtract( rel, rootRel, rel );
-		XR_ReFrame( srcAxis, gunAxis, rel, newRel );
-		VectorAdd( gunOrigin, newRel, e->oldorigin );
+		if ( aimAlign ) {
+			VectorSubtract( e->oldorigin, rootRel, rel );
+			VectorAdd( gunOrigin, rel, e->oldorigin );
+		}
 
 		// RF_DEPTHHACK squashes the gun into a narrow depth range so it
 		// cannot poke through walls. That is right for a gun welded to the
@@ -687,7 +707,8 @@ void XR_EmitHandWeapon( const refdef_t *cgameRefdef, float bodyYaw )
 			// where it sits relative to the player, and a world coordinate
 			// cannot answer it without knowing where the player was standing.
 			XR_Log( "weapon: %d ents  eye+[%.0f %.0f %.0f] (hand %.0f u out, "
-					"model %.0f u) angles=[%.1f %.1f %.1f] hand=%s",
+					"model %.0f u) angles=[%.1f %.1f %.1f] hand=%s aimAlign=%d "
+					"weapon=%d",
 					xr_numFpEnts,
 					gunOrigin[0] - cgameRefdef->vieworg[0],
 					gunOrigin[1] - cgameRefdef->vieworg[1],
@@ -695,7 +716,8 @@ void XR_EmitHandWeapon( const refdef_t *cgameRefdef, float bodyYaw )
 					Distance( gunOrigin, cgameRefdef->vieworg ),
 					Distance( xr_fpEnts[0].origin, cgameRefdef->vieworg ),
 					gunAngles[PITCH], gunAngles[YAW], gunAngles[ROLL],
-					XR_GunHand() ? "right" : "left" );
+					XR_GunHand() ? "right" : "left", aimAlign,
+					cl.snap.ps.weapon );
 		}
 	}
 
@@ -716,6 +738,12 @@ void XR_WeaponInit( void )
 	// the aim on the head always, which is AlphaTest10 behaviour and the
 	// fallback if squeezing the trigger feels wrong.
 	vr_handAimOnFire = Cvar_Get( "vr_handAimOnFire", "1", CVAR_ARCHIVE );
+
+	// The visible gun points where the shots go (cgame's own view
+	// orientation) while its POSITION follows the hand. 0 restores the old
+	// behaviour, where the prop rotates with the controller even when the
+	// hand is not the aim.
+	vr_gunAimAlign  = Cvar_Get( "vr_gunAimAlign",  "1",   CVAR_ARCHIVE );
 
 	vr_gunForward   = Cvar_Get( "vr_gunForward",  "0",   CVAR_ARCHIVE );
 	vr_gunRight     = Cvar_Get( "vr_gunRight",    "0",   CVAR_ARCHIVE );

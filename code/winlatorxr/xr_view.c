@@ -125,6 +125,12 @@ static const struct {
 #define XR_NUM_CLASSES ((int)( sizeof( xr_classes ) / sizeof( xr_classes[0] ) ))
 #define XR_HUMAN_EYE   48          // the anchor the 30 u/m default came from
 
+// cgame computes fov_y as classFov * 0.75. The human classes are 90, so every
+// class is held to that vertical angle; the horizontal follows the frame
+// aspect. See the clamp in XR_AdjustRefdef.
+#define XR_HUMAN_FOV     90.0f
+#define XR_HUMAN_FOV_Y   ( XR_HUMAN_FOV * 0.75f )
+
 static int      xr_classIndex = -1;
 static int      xr_classEye = XR_HUMAN_EYE;
 
@@ -626,6 +632,27 @@ void XR_AdjustRefdef( refdef_t *rd, float bodyYaw )
 		VectorClear( rotated );
 	}
 
+	// ---- one FOV for every class ----------------------------------------
+	//
+	// cgame takes the FOV from the class attribute, so a Dretch renders at
+	// 140*0.75 and a Basilisk at 120*0.75 against the human 90*0.75. That
+	// makes the world swell and shrink between classes and leaves the HUD
+	// looking oversized on the wide ones. The owner's call, 20 Nov 2026:
+	// keep the human FOV for every class and let the per-class scale carry
+	// the body size instead.
+	//
+	// Clamp rather than assign, so a zoom or a narrower scripted FOV still
+	// works; only a value WIDER than the human one is replaced. The
+	// horizontal angle is recomputed from the vertical and the frame aspect
+	// with cgame's own formula, so the projection stays correct.
+	if ( XR_CurrentClassIsAlien() && rd->width > 0 && rd->height > 0
+		 && rd->fov_y > XR_HUMAN_FOV_Y ) {
+		float y = rd->height / tan( 0.5f * DEG2RAD( XR_HUMAN_FOV_Y ) );
+
+		rd->fov_y = XR_HUMAN_FOV_Y;
+		rd->fov_x = 2.0f * RAD2DEG( atan2( rd->width, y ) );
+	}
+
 	// ---- FOV scale, comfort only ----------------------------------------
 	//
 	// A narrower FOV is a comfort choice; a wider one would be a gameplay
@@ -740,6 +767,13 @@ float XR_CurrentWorldScale( void )
 const char *XR_CurrentClassName( void )
 {
 	return ( xr_classIndex >= 0 ) ? xr_classes[xr_classIndex].name : "unknown";
+}
+
+qboolean XR_CurrentClassIsAlien( void )
+{
+	// 1-2 are the alien builders, 3-10 the alien levels. Spectator (0) and
+	// the two human classes (11-12) are not.
+	return ( xr_classIndex >= 1 && xr_classIndex <= 10 ) ? qtrue : qfalse;
 }
 
 /*

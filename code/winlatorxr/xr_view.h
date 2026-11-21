@@ -78,4 +78,9 @@ void        XR_NoteClass( int classIndex, int viewheight );
 float       XR_CurrentWorldScale( void );
 const char  *XR_CurrentClassName( void );
 
+// True for the alien classes (and their builders), false for humans and
+// spectators. Used to give the alien HUD its own scale and to lock the view
+// to the human FOV.
+qboolean    XR_CurrentClassIsAlien( void );
+
 #endif // __XR_VIEW_H

@@ -46,9 +46,11 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 
 #include "xr_hud.h"
 #include "xr_api.h"
+#include "xr_view.h"
 #include "../client/client.h"
 
 static cvar_t   *vr_hudScale;
+static cvar_t   *vr_hudScaleAlien;
 static cvar_t   *vr_hideCrosshair;
 
 /*
@@ -62,6 +64,12 @@ void XR_HudInit( void )
 	// off, and anything between is a straight interpolation, so this is
 	// tunable on the device without a rebuild like every other vr_* value.
 	vr_hudScale      = Cvar_Get( "vr_hudScale",      "0.5", CVAR_ARCHIVE );
+
+	// The alien HUD is laid out with larger bars and fewer margins than the
+	// human one, so at the same scale it reads as oversized. Its own default
+	// keeps the human setting meaning "human", and the menu exposes both.
+	vr_hudScaleAlien = Cvar_Get( "vr_hudScaleAlien", "0.45", CVAR_ARCHIVE );
+
 	vr_hideCrosshair = Cvar_Get( "vr_hideCrosshair", "1",   CVAR_ARCHIVE );
 }
 
@@ -104,6 +112,13 @@ void XR_HudScale2D( float *x, float *y, float *w, float *h )
 {
 	float   s = vr_hudScale->value;
 	float   cx, cy;
+
+	// Aliens get their own scale because their HUD is drawn larger to begin
+	// with. The class is known from the player state, not guessed from the
+	// HUD itself.
+	if ( XR_CurrentClassIsAlien( ) && vr_hudScaleAlien->value > 0.0f ) {
+		s = vr_hudScaleAlien->value;
+	}
 
 	if ( !XR_IsEnabled() || s <= 0.0f || s > 1.0f || s == 1.0f ) {
 		return;

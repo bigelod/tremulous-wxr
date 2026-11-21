@@ -99,15 +99,16 @@ here reaches into cgame or game code, so a pure server cannot take it away.
 static const xrMenuItem_t xr_debugItems[] = {
 	{ "Verbose log",        XR_MENU_TOGGLE, "vr_verbose" },
 	{ "Sync pixel",         XR_MENU_TOGGLE, "vr_syncPixel" },
-	{ "Position tracking",  XR_MENU_TOGGLE, "vr_posTracking" },
+	{ "Position",           XR_MENU_TOGGLE, "vr_posTracking" },
 	{ "Head roll",          XR_MENU_TOGGLE, "vr_rollEnable" },
 	{ "Head pitch",         XR_MENU_TOGGLE, "vr_pitchEnable" },
-	{ "Per-class scale",    XR_MENU_TOGGLE, "vr_classScale" },
+	{ "Class scale",        XR_MENU_TOGGLE, "vr_classScale" },
 	{ "Hand gun",           XR_MENU_TOGGLE, "vr_handGun" },
-	{ "Hand aim on fire",   XR_MENU_TOGGLE, "vr_handAimOnFire" },
+	{ "Aim on fire",        XR_MENU_TOGGLE, "vr_handAimOnFire" },
 	{ "Left-handed",        XR_MENU_TOGGLE, "vr_dominantHand" },
-	{ "Stick deadzone",     XR_MENU_SLIDER, "vr_stickDeadzone", 0.0f, 0.5f, 0.05f },
-	{ "Turn speed (deg/s)", XR_MENU_SLIDER, "vr_turnSpeed",    60.0f, 300.0f, 10.0f },
+	{ "Deadzone",           XR_MENU_SLIDER, "vr_stickDeadzone", 0.0f, 0.5f, 0.05f },
+	{ "Turn speed",         XR_MENU_SLIDER, "vr_turnSpeed",    60.0f, 300.0f, 10.0f },
+	{ "Invert menu",        XR_MENU_TOGGLE, "vr_menuInvert" },
 	{ "Recentre",           XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "vr_recentre" },
 	{ "Back",               XR_MENU_BACK }
 };
@@ -119,13 +120,15 @@ static const xrMenuPage_t xr_pageDebug = {
 };
 
 static const xrMenuItem_t xr_qualityItems[] = {
-	{ "Game FOV scale",       XR_MENU_SLIDER, "vr_fovScale",   0.5f,  1.0f,  0.05f },
-	{ "XrAPI FOV H (fallback)", XR_MENU_SLIDER, "vr_fovX",    80.0f, 130.0f, 0.5f },
-	{ "XrAPI FOV V (fallback)", XR_MENU_SLIDER, "vr_fovY",    80.0f, 130.0f, 0.5f },
-	{ "World scale (human)",  XR_MENU_SLIDER, "vr_worldScale",20.0f,  50.0f,  1.0f },
-	{ "HUD scale",            XR_MENU_SLIDER, "vr_hudScale",   0.3f,  1.0f,  0.05f },
+	{ "Game FOV",             XR_MENU_SLIDER, "vr_fovScale",   0.5f,  1.0f,  0.05f },
+	{ "FOV H",                XR_MENU_SLIDER, "vr_fovX",      80.0f, 130.0f, 0.5f },
+	{ "FOV V",                XR_MENU_SLIDER, "vr_fovY",      80.0f, 130.0f, 0.5f },
+	{ "World scale",          XR_MENU_SLIDER, "vr_worldScale",20.0f,  50.0f,  1.0f },
+	{ "HUD human",            XR_MENU_SLIDER, "vr_hudScale",   0.3f,  1.0f,  0.05f },
+	{ "HUD alien",            XR_MENU_SLIDER, "vr_hudScaleAlien",0.2f, 1.0f,  0.05f },
 	{ "Hide crosshair",       XR_MENU_TOGGLE, "vr_hideCrosshair" },
-	{ "Block desktop input",  XR_MENU_TOGGLE, "vr_blockDesktopInput" },
+	{ "Gun aim align",        XR_MENU_TOGGLE, "vr_gunAimAlign" },
+	{ "Desktop input",        XR_MENU_TOGGLE, "vr_blockDesktopInput" },
 	{ "Back",                 XR_MENU_BACK }
 };
 
@@ -135,9 +138,31 @@ static const xrMenuPage_t xr_pageQuality = {
 	(int)( sizeof( xr_qualityItems ) / sizeof( xr_qualityItems[0] ) )
 };
 
+// Commands that the PC build binds to keys the controller does not have --
+// deconstruct, the middle-click button, buy ammo, the medkit, votes. They are
+// here rather than on the controller because there is no spare button left;
+// the page is the discoverable, headset-friendly route to them.
+static const xrMenuItem_t xr_actionItems[] = {
+	{ "Deconstruct",    XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "deconstruct" },
+	{ "Middle click",   XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "+button3\n-button3" },
+	{ "Buy ammo",       XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "buy ammo" },
+	{ "Use medkit",     XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "itemact medkit" },
+	{ "Reload",         XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "reload" },
+	{ "Vote yes",       XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "vote yes" },
+	{ "Vote no",        XR_MENU_ACTION, NULL, 0.0f, 0.0f, 0.0f, "vote no" },
+	{ "Back",           XR_MENU_BACK }
+};
+
+static const xrMenuPage_t xr_pageActions = {
+	"ACTIONS",
+	xr_actionItems,
+	(int)( sizeof( xr_actionItems ) / sizeof( xr_actionItems[0] ) )
+};
+
 static const xrMenuItem_t xr_rootItems[] = {
 	{ "DEBUG",   XR_MENU_SUBMENU, NULL, 0.0f, 0.0f, 0.0f, NULL, &xr_pageDebug },
 	{ "QUALITY", XR_MENU_SUBMENU, NULL, 0.0f, 0.0f, 0.0f, NULL, &xr_pageQuality },
+	{ "ACTIONS", XR_MENU_SUBMENU, NULL, 0.0f, 0.0f, 0.0f, NULL, &xr_pageActions },
 	{ "Close",   XR_MENU_CLOSE }
 };
 
@@ -194,23 +219,46 @@ Helpers
 ===========================================================================
 */
 
-static void XR_MenuFill( float x, float y, float w, float h, const vec4_t c )
+static void XR_MenuFill( int x, int y, int w, int h, const vec4_t c )
 {
 	re.SetColor( c );
-	SCR_DrawPic( x, y, w, h, cls.whiteShader );
+	re.DrawStretchPic( (float)x, (float)y, (float)w, (float)h,
+					   0.0f, 0.0f, 1.0f, 1.0f, cls.whiteShader );
 }
 
-static void XR_MenuText( float x, float y, float size, const char *text,
-						 const vec4_t c )
+static void XR_MenuChar( int x, int y, int size, int ch )
 {
-	vec4_t  col;
+	int     row, col;
+	float   frow, fcol;
+	const float step = 0.0625f;
 
-	col[0] = c[0];
-	col[1] = c[1];
-	col[2] = c[2];
-	col[3] = c[3];
+	ch &= 255;
+	if ( ch == ' ' ) {
+		return;
+	}
 
-	SCR_DrawStringExt( (int)x, (int)y, size, text, col, qtrue, qtrue );
+	row = ch >> 4;
+	col = ch & 15;
+	frow = row * step;
+	fcol = col * step;
+
+	re.DrawStretchPic( (float)x, (float)y, (float)size, (float)size,
+					   fcol, frow, fcol + step, frow + step,
+					   cls.charSetShader );
+}
+
+static int XR_MenuText( int x, int y, int size, const char *text,
+						const vec4_t c )
+{
+	int start = x;
+
+	re.SetColor( c );
+
+	for ( ; *text; text++, x += size ) {
+		XR_MenuChar( x, y, size, (unsigned char)*text );
+	}
+
+	return x - start;
 }
 
 static const xrMenuPage_t *XR_MenuPage( void )
@@ -305,7 +353,16 @@ static void XR_MenuMove( int dir )
 		return;
 	}
 
-	xr_menuIndex = ( xr_menuIndex + dir + n ) % n;
+	// Clamp rather than wrap. Wrapping made "up" from the first item select
+	// the last one, which reads as an inverted stick even when the sign is
+	// right. The owner explicitly does not want that surprise.
+	xr_menuIndex += dir;
+	if ( xr_menuIndex < 0 ) {
+		xr_menuIndex = 0;
+	}
+	if ( xr_menuIndex >= n ) {
+		xr_menuIndex = n - 1;
+	}
 }
 
 static void XR_MenuAdjust( int dir )
@@ -438,7 +495,15 @@ qboolean XR_MenuFrame( void )
 	v = s->stick[moveHand][1];
 	h = s->stick[turnHand][0];
 
+	// The packet's Y is forward-positive in the owner's capture, so positive
+	// is "up" in a list. vr_menuInvert flips this for a headset or a hand
+	// that reports the other way; it is a DEBUG toggle and a cvar, so a
+	// tester never needs the console to correct it.
 	vdir = ( v > XR_MENU_DEADZONE ) ? -1 : ( ( v < -XR_MENU_DEADZONE ) ? 1 : 0 );
+
+	if ( Cvar_VariableIntegerValue( "vr_menuInvert" ) ) {
+		vdir = -vdir;
+	}
 	hdir = ( h > XR_MENU_DEADZONE ) ? 1 : ( ( h < -XR_MENU_DEADZONE ) ? -1 : 0 );
 
 	now = Sys_Milliseconds( );
@@ -558,8 +623,8 @@ static void XR_MenuValueText( const xrMenuItem_t *it, char *buf, int size )
 	switch ( it->type ) {
 	case XR_MENU_TOGGLE:
 		Q_strncpyz( buf,
-					Cvar_VariableIntegerValue( it->cvar ) ? "[ ON  ]"
-														  : "[ OFF ]",
+					Cvar_VariableIntegerValue( it->cvar ) ? "ON"
+														  : "OFF",
 					size );
 		break;
 	case XR_MENU_SLIDER:
@@ -585,69 +650,149 @@ void XR_MenuDraw( void )
 	const xrMenuPage_t  *page;
 	const xrMenuItem_t  *it;
 	const vec4_t        *valueColor;
-	float               x = 90.0f, w = 460.0f;
-	float               y, h;
-	float               ry, bar;
 	char                value[64];
 	char                line[256];
 	float               fovX, fovY;
+	int                 vw, vh;
+	int                 size, small, rowH, pad, border;
+	int                 pw, ph, header, footer;
+	int                 x, y, rowY0, rowY, labelX, valueRight, valueX;
+	int                 barX, barW, barH;
+	int                 bottom, footer1, footer2, status1, status2;
+	int                 titleSize;
 	int                 i;
 
 	if ( !xr_menuOpen || !XR_IsEnabled( ) ) {
 		return;
 	}
 
+	vw = cls.glconfig.vidWidth;
+	vh = cls.glconfig.vidHeight;
+
+	// Real pixels, not the 640x480 virtual space the game's HUD uses. That
+	// space is stretched by the window's aspect, and on a square headset
+	// frame it makes the glyphs 33% taller than they are wide -- which is
+	// exactly what "hard to read" looks like. Drawing at a size derived from
+	// the frame height keeps the panel the same physical size at 1024x768,
+	// 1400x1400 and 2800x1400.
+	if ( vw < 320 || vh < 240 ) {
+		return;
+	}
+
 	page = XR_MenuPage( );
 
-	// A page-sized panel, centred. Three items and thirteen should not have
-	// the same amount of empty space below them.
-	h = 150.0f + ( page->count * 22.0f );
-	if ( h > 400.0f ) {
-		h = 400.0f;
+	size = vh / 44;
+	if ( size < 12 ) {
+		size = 12;
 	}
-	y = ( 480.0f - h ) * 0.5f;
+
+	small = size * 2 / 3;
+	if ( small < 12 ) {
+		small = 12;
+	}
+
+	rowH = size * 3 / 2;
+	if ( rowH < 20 ) {
+		rowH = 20;
+	}
+
+	pad = size;
+
+	// Width follows the frame height, so the panel subtends a similar angle
+	// whatever the container resolution. Capped on very wide frames so it
+	// does not become a thin column.
+	pw = vh * 62 / 100;
+	if ( pw > vw * 50 / 100 ) {
+		pw = vw * 50 / 100;
+	}
+	if ( pw < 360 ) {
+		pw = 360;
+	}
+	if ( pw > vw - 20 ) {
+		pw = vw - 20;
+	}
+
+	header = rowH + size;
+	footer = rowH * 4;              // two status lines + two help lines
+	ph = header + ( page->count * rowH ) + footer + pad;
+
+	if ( ph > vh - 16 ) {
+		int avail = ( vh - 16 ) - header - footer - pad;
+
+		if ( avail < page->count * 14 ) {
+			// Nothing sensible left to trim; let the list clip rather than
+			// draw a panel taller than the frame.
+			ph = vh - 16;
+		} else {
+			rowH = avail / page->count;
+			ph = header + ( page->count * rowH ) + footer + pad;
+		}
+	}
+
+	x = ( vw - pw ) / 2;
+	y = ( vh - ph ) / 2;
+
+	border = size / 12;
+	if ( border < 2 ) {
+		border = 2;
+	}
 
 	// Dim the world behind the panel so text reads against any map.
-	XR_MenuFill( 0.0f, 0.0f, 640.0f, 480.0f, xr_menuDim );
+	XR_MenuFill( 0, 0, vw, vh, xr_menuDim );
 
-	XR_MenuFill( x, y, w, h, xr_menuBg );
-	XR_MenuFill( x, y, w, 2.0f, xr_menuBorder );
-	XR_MenuFill( x, y + h - 2.0f, w, 2.0f, xr_menuBorder );
-	XR_MenuFill( x, y, 2.0f, h, xr_menuBorder );
-	XR_MenuFill( x + w - 2.0f, y, 2.0f, h, xr_menuBorder );
+	XR_MenuFill( x, y, pw, ph, xr_menuBg );
+	XR_MenuFill( x, y, pw, border, xr_menuBorder );
+	XR_MenuFill( x, y + ph - border, pw, border, xr_menuBorder );
+	XR_MenuFill( x, y, border, ph, xr_menuBorder );
+	XR_MenuFill( x + pw - border, y, border, ph, xr_menuBorder );
 
-	XR_MenuText( x + 16.0f, y + 10.0f, 16.0f, "VR", xr_menuTitle );
-	XR_MenuText( x + 62.0f, y + 15.0f, 10.0f,
+	titleSize = size * 3 / 2;
+	XR_MenuText( x + pad, y + pad / 2, titleSize, "VR", xr_menuTitle );
+	XR_MenuText( x + pad + ( titleSize * 2 ) + size,
+				 y + pad / 2 + ( titleSize - size ) / 2, size,
 				 ( page == &xr_pageRoot ) ? "SETTINGS" : page->title,
 				 xr_menuText );
-	XR_MenuFill( x + 12.0f, y + 34.0f, w - 24.0f, 1.0f, xr_menuBorder );
+
+	XR_MenuFill( x + pad, y + header - size / 2, pw - ( pad * 2 ), 1,
+				 xr_menuBorder );
+
+	rowY0 = y + header;
+	labelX = x + pad;
+	valueRight = x + pw - pad;
+	valueX = valueRight - ( size * 5 );
+	barW = size * 3;
+	barH = size / 4;
+	if ( barH < 6 ) {
+		barH = 6;
+	}
+	barX = valueX - barW - size;
 
 	for ( i = 0; i < page->count; i++ ) {
 		it = &page->items[i];
-		ry = y + 50.0f + ( i * 22.0f );
+		rowY = rowY0 + ( i * rowH );
 
 		if ( i == xr_menuIndex ) {
-			XR_MenuFill( x + 10.0f, ry - 3.0f, w - 20.0f, 20.0f,
+			XR_MenuFill( x + ( pad / 2 ), rowY, pw - pad, rowH,
 						 xr_menuSelect );
 		}
 
-		XR_MenuText( x + 20.0f, ry, 10.0f, it->label, xr_menuText );
+		XR_MenuText( labelX, rowY + ( ( rowH - size ) / 2 ), size,
+					 it->label, xr_menuText );
 
 		if ( it->type == XR_MENU_SLIDER ) {
 			float v = Cvar_VariableValue( it->cvar );
 			float f = ( it->max > it->min )
 					  ? ( v - it->min ) / ( it->max - it->min ) : 0.0f;
+			int   barY = rowY + ( ( rowH - barH ) / 2 );
 
 			f = Com_Clamp( 0.0f, 1.0f, f );
-			bar = 90.0f;
 
-			XR_MenuFill( x + w - 200.0f, ry + 7.0f, bar, 6.0f,
-						 xr_menuBarBg );
-			XR_MenuFill( x + w - 200.0f, ry + 7.0f, bar * f, 6.0f,
-						 xr_menuBar );
+			XR_MenuFill( barX, barY, barW, barH, xr_menuBarBg );
+			XR_MenuFill( barX, barY, (int)( barW * f ), barH, xr_menuBar );
 
 			Com_sprintf( value, sizeof( value ), "%.2f", v );
-			XR_MenuText( x + w - 100.0f, ry, 10.0f, value, xr_menuText );
+			XR_MenuText( valueX, rowY + ( ( rowH - size ) / 2 ), size,
+						 value, xr_menuText );
 		} else {
 			XR_MenuValueText( it, value, sizeof( value ) );
 			valueColor = &xr_menuText;
@@ -657,53 +802,61 @@ void XR_MenuDraw( void )
 							 ? &xr_menuOn : &xr_menuOff;
 			}
 
-			XR_MenuText( x + w - 88.0f, ry, 10.0f, value, *valueColor );
+			XR_MenuText( valueX, rowY + ( ( rowH - size ) / 2 ), size,
+						 value, *valueColor );
 		}
 	}
 
-	// Status. Read-only, and the numbers the tester would otherwise have to
-	// pull a log for.
+	// Status and help, laid out from the bottom so they cannot collide with
+	// the last row. Read-only numbers the tester would otherwise pull a log
+	// for.
+	bottom = y + ph - pad;
+	footer2 = bottom - small;
+	footer1 = footer2 - rowH;
+	status2 = footer1 - rowH;
+	status1 = status2 - rowH;
+
 	XR_GetRenderedFov( &fovX, &fovY );
 
 	if ( page == &xr_pageDebug ) {
 		Com_sprintf( line, sizeof( line ),
-					 "class %s  scale %.2f u/m  packets %d",
+					 "class %s  %.2f u/m  pkt %d",
 					 XR_CurrentClassName( ), XR_CurrentWorldScale( ),
 					 XR_GetState( )->packetsReceived );
-		XR_MenuText( x + 20.0f, y + h - 66.0f, 8.0f, line, xr_menuDimText );
+		XR_MenuText( labelX, status1, small, line, xr_menuDimText );
 
 		Com_sprintf( line, sizeof( line ),
-					 "rendered FOV %.1f x %.1f   sync %.0f",
+					 "FOV %.1f x %.1f  sync %.0f",
 					 fovX, fovY, XR_GetState( )->sync );
-		XR_MenuText( x + 20.0f, y + h - 54.0f, 8.0f, line, xr_menuDimText );
+		XR_MenuText( labelX, status2, small, line, xr_menuDimText );
 	} else if ( page == &xr_pageQuality ) {
 		Com_sprintf( line, sizeof( line ),
-					 "live FOV %.1f x %.1f   frame %d x %d",
-					 fovX, fovY, cls.glconfig.vidWidth,
-					 cls.glconfig.vidHeight );
-		XR_MenuText( x + 20.0f, y + h - 66.0f, 8.0f, line, xr_menuDimText );
+					 "FOV %.1f x %.1f  frame %d x %d",
+					 fovX, fovY, vw, vh );
+		XR_MenuText( labelX, status1, small, line, xr_menuDimText );
 
 		Com_sprintf( line, sizeof( line ),
-					 "class %s  derived scale %.2f u/m",
+					 "class %s  %.2f u/m",
 					 XR_CurrentClassName( ), XR_CurrentWorldScale( ) );
-		XR_MenuText( x + 20.0f, y + h - 54.0f, 8.0f, line, xr_menuDimText );
+		XR_MenuText( labelX, status2, small, line, xr_menuDimText );
 	} else {
 		Com_sprintf( line, sizeof( line ),
-					 "class %s  scale %.2f u/m  packets %d",
+					 "class %s  %.2f u/m  pkt %d",
 					 XR_CurrentClassName( ), XR_CurrentWorldScale( ),
 					 XR_GetState( )->packetsReceived );
-		XR_MenuText( x + 20.0f, y + h - 66.0f, 8.0f, line, xr_menuDimText );
+		XR_MenuText( labelX, status1, small, line, xr_menuDimText );
 
-		XR_MenuText( x + 20.0f, y + h - 54.0f, 8.0f,
-					 "Console-free settings. TRIGGER selects.",
+		XR_MenuText( labelX, status2, small,
+					 "TRIGGER selects. Console-free.",
 					 xr_menuDimText );
 	}
 
-	XR_MenuText( x + 20.0f, y + h - 30.0f, 8.0f,
-				 "Stick: move / adjust   TRIGGER: select   B: back",
+	XR_MenuText( labelX, footer1, small,
+				 "STICK MOVE / TRIGGER SELECT / B BACK",
 				 xr_menuDimText );
-	XR_MenuText( x + 20.0f, y + h - 18.0f, 8.0f,
-				 "F1 or dominant stick click: close", xr_menuDimText );
+	XR_MenuText( labelX, footer2, small,
+				 "F1 or stick click: close",
+				 xr_menuDimText );
 
 	re.SetColor( NULL );
 }
@@ -728,6 +881,11 @@ void XR_MenuInit( void )
 	// -1 = the dominant stick click, which is the one stick click the action
 	// table leaves free. >= 0 pins a literal bool index.
 	Cvar_Get( "vr_menuButton", "-1", CVAR_ARCHIVE );
+
+	// 0 = packet Y positive moves the selection up; 1 flips it. A DEBUG
+	// toggle because the stick sign is the one thing a screenshot cannot
+	// settle.
+	Cvar_Get( "vr_menuInvert", "0", CVAR_ARCHIVE );
 
 	Cmd_AddCommand( "vr_menu", XR_MenuToggle_f );
 

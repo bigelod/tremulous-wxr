@@ -251,3 +251,27 @@ testing.
 **Symptom if broken:** a menu that cannot be typed into, an escape key that
 stops working, or VR controls that die because the filter was placed in
 `CL_KeyEvent` where synthetic and physical events are indistinguishable.
+
+## 25. One FOV for every class; body size is carried by scale
+
+Alien classes render at 140 or 120 x 0.75 in cgame while humans use 90 x 0.75.
+The render hook clamps any value wider than the human vertical FOV and
+recomputes the horizontal from the frame aspect. Do not reintroduce per-class
+FOV through cgame's attribute: the class difference belongs in
+`vr_worldScale`, and a differing FOV is what made the world swell and the HUD
+look wrong between classes.
+
+**Symptom if broken:** the view zooms when the player evolves, and an alien
+HUD that was legible becomes oversized or unreadable without a scale change.
+
+## 26. The visible gun points where the shots go
+
+`vr_gunAimAlign 1` keeps cgame's own orientation for the weapon prop (down the
+aim) and moves only its position to the hand. While firing, the hand is the
+aim, so hand orientation and trims are used. Do not go back to orienting the
+prop by the hand at all times: shots follow the head until the trigger is
+down, and a hand-held prop then points away from the crosshair -- the Blaster
+was the visible case.
+
+**Symptom if broken:** a gun looks like it is aiming somewhere other than the
+shot, most obviously on models whose grip is not aligned with the barrel axis.

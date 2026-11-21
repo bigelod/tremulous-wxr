@@ -1,8 +1,8 @@
 # The VR settings overlay
 
-**Added 16 November 2026.** An engine-side menu for the settings that
-otherwise need the console, because typing on a headset means the on-screen
-keyboard.
+**Added 16 November 2026; resized and given an ACTIONS page 20 November.**
+An engine-side menu for the settings that otherwise need the console, because
+typing on a headset means the on-screen keyboard.
 
 ---
 
@@ -22,7 +22,7 @@ sit on top of a menu the player is trying to click.
 
 | Input | Action |
 |---|---|
-| move stick up / down | move the selection |
+| move stick up / down | move the selection. Up stops at the top instead of wrapping to the bottom |
 | turn stick left / right | adjust a slider |
 | dominant trigger | select, toggle, run, enter a submenu |
 | dominant B | back one page, then close |
@@ -30,6 +30,12 @@ sit on top of a menu the player is trying to click.
 
 The trigger is ignored until it has been **released once** after opening, so
 a trigger still held from firing cannot activate the first item.
+
+If up/down still feels inverted on a given headset, **Invert menu stick**
+(`vr_menuInvert`) is the DEBUG toggle to change; it needs no console. The
+packet's Y is forward-positive on the device capture, so the default is the
+un-inverted one; the earlier "reversed" report was the list wrapping from the
+first item to the last.
 
 ## Pages
 
@@ -39,15 +45,16 @@ a trigger still held from firing cannot activate the first item.
 |---|---|---|
 | Verbose log | `vr_verbose` | toggle |
 | Sync pixel | `vr_syncPixel` | toggle |
-| Position tracking | `vr_posTracking` | toggle |
+| Position | `vr_posTracking` | toggle |
 | Head roll | `vr_rollEnable` | toggle |
 | Head pitch | `vr_pitchEnable` | toggle |
-| Per-class scale | `vr_classScale` | toggle |
+| Class scale | `vr_classScale` | toggle |
 | Hand gun | `vr_handGun` | toggle |
-| Hand aim on fire | `vr_handAimOnFire` | toggle |
+| Aim on fire | `vr_handAimOnFire` | toggle |
 | Left-handed | `vr_dominantHand` | toggle |
-| Stick deadzone | `vr_stickDeadzone` | slider 0 - 0.5 |
+| Deadzone | `vr_stickDeadzone` | slider 0 - 0.5 |
 | Turn speed | `vr_turnSpeed` | slider 60 - 300 deg/s |
+| Invert menu | `vr_menuInvert` | toggle |
 | Recentre | `vr_recentre` | action |
 
 Status lines at the bottom show the current class, the **derived** scale in
@@ -57,13 +64,15 @@ u/m, packet count, live rendered FOV and the current sync value.
 
 | Item | Cvar | Type |
 |---|---|---|
-| Game FOV scale | `vr_fovScale` | slider 0.5 - 1.0 |
-| XrAPI FOV H (fallback) | `vr_fovX` | slider 80 - 130 |
-| XrAPI FOV V (fallback) | `vr_fovY` | slider 80 - 130 |
-| World scale (human) | `vr_worldScale` | slider 20 - 50 |
-| HUD scale | `vr_hudScale` | slider 0.3 - 1.0 |
+| Game FOV | `vr_fovScale` | slider 0.5 - 1.0 |
+| FOV H | `vr_fovX` | slider 80 - 130 (fallback) |
+| FOV V | `vr_fovY` | slider 80 - 130 (fallback) |
+| World scale | `vr_worldScale` | slider 20 - 50 |
+| HUD human | `vr_hudScale` | slider 0.3 - 1.0 |
+| HUD alien | `vr_hudScaleAlien` | slider 0.2 - 1.0 |
 | Hide crosshair | `vr_hideCrosshair` | toggle |
-| Block desktop input | `vr_blockDesktopInput` | toggle |
+| Gun aim align | `vr_gunAimAlign` | toggle |
+| Desktop input | `vr_blockDesktopInput` | toggle |
 
 Status lines show the **live** rendered FOV and the frame size, plus the
 class and its derived scale.
@@ -77,6 +86,25 @@ both: the sliders for the fallback, and the live number read from the frame.
 **Why FOV scale is capped at 1.0.** A narrower FOV is a comfort choice; a
 wider one than the class allows would be a gameplay advantage. The hard rule
 in `PROJECT_PLAN.md` forbids the latter, so the applied value is clamped.
+
+### VR -> ACTIONS
+
+Commands the PC build binds to keys the controller does not have. The page is
+the discoverable route to them without a spare button or a console:
+
+| Item | Runs |
+|---|---|
+| Deconstruct | `deconstruct` |
+| Middle click | `+button3` then `-button3` |
+| Buy ammo | `buy ammo` |
+| Use medkit | `itemact medkit` |
+| Reload | `reload` |
+| Vote yes | `vote yes` |
+| Vote no | `vote no` |
+
+`Y` already sends deconstruct on the dominant hand; the row exists because
+"which button does that?" was the question, and a list answers it in the
+headset. Middle click is the PC `+button3` (gesture), not a new binding.
 
 ## Desktop keyboard and mouse blocking
 
@@ -100,8 +128,25 @@ mapping already sends.
 - `vr_blockDesktopInput 0` turns the whole thing off, which is what a desktop
   test that wants WASD and the mouse should use.
 
-The DEBUG page does not expose it (it is full); it is a QUALITY toggle and a
-console cvar.
+The DEBUG page does not expose it; it is a QUALITY toggle and a console cvar.
+
+## Size and readability, 20 November 2026
+
+The first version drew in the game's 640x480 virtual space. On a square
+headset frame that stretches every glyph 33% taller than it is wide, and the
+panel was 72% of the frame width. Both complaints - "too large" and "hard to
+read" - came from the same place.
+
+It is now drawn in **real pixels**, with the font and panel sized from the
+frame height:
+
+- font `vidHeight / 44`, row height 1.5x the font
+- panel width `62%` of the frame height, capped at 50% of the width
+- height follows the page, so three items make a small panel and fourteen
+  make a taller one
+- real-pixel glyphs are square at every aspect ratio
+
+`1024x768`, `1400x1400` and `2800x1400` all get the same physical size.
 
 ## What it does to the game
 
@@ -127,7 +172,9 @@ It is also deliberately **not** a settings INI: every item is a cvar, so the
 console and the menu change the same value, and a tester never has to edit a
 file on the headset.
 
-## Verified on the desktop, 16 November 2026
+## Verified on the desktop
+
+**16 November 2026**
 
 - `vr_menu` opens and closes the overlay; `vr.log` records
   `menu: toggle requested`, `menu: open`, `menu: closed`.
@@ -136,11 +183,17 @@ file on the headset.
 - Screenshot at 1024x768: the panel draws over the world and HUD, the title
   reads **VR SETTINGS**, the items are legible, and the sync pixel is still
   the top-left pixel.
-- The class line is live in the panel (`class human, scale 30.00 u/m,
-  packets N`), which is the same derivation the DEBUG page reports.
-- **Not yet check-pointed:** the DEBUG and QUALITY pages were not
-  photographed (same draw path, more rows), and no item was toggled from the
-  panel on hardware. The device checklist below covers both.
+
+**20 November 2026**
+
+- Re-shot at 1024x768 after the real-pixel rewrite: the panel is ~42% of the
+  width, the root list is **DEBUG / QUALITY / ACTIONS / CLOSE**, and the text
+  is crisp and larger than the old stretched font.
+- Same shot over an alien (Dretch): the class/scale status line follows the
+  class and the panel is unchanged in size.
+- **Not yet check-pointed:** the ACTIONS commands executed from the panel,
+  the stick-inversion toggle, and any item toggled on hardware. The device
+  checklist below covers them.
 
 **A testing trap worth knowing.** If the game appears to hang after
 `Hunk_Clear: reset the hunk ok`, it is not hung: it is showing a modal
@@ -171,13 +224,21 @@ diagnosis cycle here and will look exactly like a startup crash.
 - [ ] **ESC from the controller** still opens the in-game menu (it is never
       blocked)
 - [ ] `vr_blockDesktopInput 0` restores physical input while playing
+- [ ] **Menu stick**: up goes up and stops at the top; if not, toggle
+      Invert menu stick
+- [ ] **ACTIONS**: Deconstruct and Middle click do what the PC keys do
+- [ ] **Alien HUD**: `vr_hudScaleAlien` changes the alien HUD only; human HUD
+      is unaffected
+- [ ] **Alien FOV**: every class reports the same vertical FOV as a human in
+      `vr.log` (`fov: sending`), and the world does not zoom when changing
+      class
+- [ ] **Gun aim**: with `vr_gunAimAlign 1`, the Blaster and other guns point
+      down the view while idle; while firing they follow the hand
 
 ## Known limits
 
-- No mouse cursor and no scrolling. The pages fit on one panel; a page that
-  grows past 13 rows will need a scroll before it is usable.
-- The panel is 640x480 virtual space, so it is readable but not resolution
-  independent in the way the 3D world is.
+- No mouse cursor and no scrolling. The pages fit on one panel; a page past
+  about fourteen rows will need a scroll before it is usable.
 - Values are two decimal places on screen; the cvar itself is exact.
 - It is an overlay, not a pause. On a live server the player is vulnerable
   while it is open, which is the correct trade for a multiplayer game.

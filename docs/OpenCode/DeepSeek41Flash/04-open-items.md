@@ -74,10 +74,12 @@ Ride the same session:
   Marauder, Dragoon, Tyrant, Granger, Battlesuit) - `vr.log` prints the class,
   eye height and resulting u/m, so the number is on the record even when the
   verdict is "feels wrong"
-- open the **VR settings overlay** with the dominant stick click and walk both
-  pages: every toggle should take effect without a restart, every slider
-  should move with the turn stick, and the game must not move or fire while
-  it is open. Full checklist in `08-vr-menu.md`
+- open the **VR settings overlay** with the dominant stick click and walk all
+  three pages: every toggle should take effect without a restart, every
+  slider should move with the turn stick, and the game must not move or fire
+  while it is open. Full checklist in `08-vr-menu.md`
+- confirm the **ACTIONS** page executes Deconstruct and Middle click, and that
+  the menu up/down direction is right (toggle Invert menu stick if not)
 - with a real keyboard/mouse connected, confirm A/B/X/Y/arrows/Space/Enter
   and mouse clicks do nothing **in a match**, that they work in the title
   screen/console/menus, that **ESC from the controller still works**, and that
@@ -103,13 +105,17 @@ also exercises two different cgame builds.
 
 ### 4. Owner verdict on the known rough edges
 
-From `Release/AlphaTest11/README.txt`, all still open:
+From `Release/AlphaTest11/README.txt`, updated by the 20 November round:
 
 - tracers and muzzle flash come from the view, not the barrel
 - no crosshair and no laser sight, so the gun is the only aiming reference
   until the first shot
 - no `RF_DEPTHHACK` on the hand gun, so it can clip into nearby geometry
 - `vr_hudScale` shrinks the console and chat as well as the HUD
+- **fixed, pending device confirmation:** the gun prop now points down the
+  aim (`vr_gunAimAlign`); the Blaster was the visible case
+- **addressed, pending device confirmation:** deconstruct and middle click
+  are on the ACTIONS page, and the alien HUD has its own scale
 
 My read: the laser sight has the best effort-to-value ratio; the clipping is
 the one most likely to be noticed in a corridor; the tracer origin is

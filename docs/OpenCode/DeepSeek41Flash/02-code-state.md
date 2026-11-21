@@ -8,18 +8,18 @@ uncommitted `README.md` edit, which I left alone).
 
 ## Size and shape
 
-`code/winlatorxr/` is real code, seven modules plus headers, **about 4,700
-lines of C and 460 lines of headers**:
+`code/winlatorxr/` is real code, seven modules plus headers, **about 5,000
+lines of C and 470 lines of headers**:
 
 | File | Lines | What it owns |
 |---|---:|---|
 | `xr_api.c` / `.h` | 1255 / 135 | XrApi 0.5 transport: handshake files, `system` parsing, UDP in/out, `vr.log`, cvars, game-state gate |
-| `xr_view.c` / `.h` | 789 / 81 | Head pose conversion, recentre, roll/position composition, usercmd yaw/pitch, per-class world scale, FOV comfort scale |
-| `xr_input.c` / `.h` | 833 / 60 | Controller booleans -> synthesised key events, sticks -> usercmd, turn, weapon cycling, menu click, verbose button census |
-| `xr_weapon.c` / `.h` | 737 / 55 | Captured `RF_FIRST_PERSON` entities re-expressed at the dominant hand, gun trims, `handsfix.txt`, hand aim on fire |
+| `xr_view.c` / `.h` | 823 / 86 | Head pose conversion, recentre, roll/position composition, usercmd yaw/pitch, per-class world scale, one-FOV clamp |
+| `xr_input.c` / `.h` | 845 / 60 | Controller booleans -> synthesised key events, sticks -> usercmd, turn, weapon cycling, menu click, verbose button census |
+| `xr_weapon.c` / `.h` | 765 / 55 | Captured `RF_FIRST_PERSON` entities at the dominant hand, aim-aligned prop, gun trims, `handsfix.txt`, hand aim on fire |
 | `xr_sync.c` / `.h` | 240 / 42 | The 10x10 sync square, drawn in real pixels, last |
-| `xr_hud.c` / `.h` | 134 / 36 | HUD shrink about the centre, crosshair off/on |
-| `xr_menu.c` / `.h` | 717 / 55 | Engine-side VR settings overlay: DEBUG and QUALITY pages, controller and keyboard navigation |
+| `xr_hud.c` / `.h` | 149 / 36 | HUD shrink about the centre, separate alien scale, crosshair off/on |
+| `xr_menu.c` / `.h` | 898 / 55 | Engine-side settings overlay: DEBUG / QUALITY / ACTIONS, real-pixel drawing, controller and keyboard navigation |
 
 Wired into the real build at `cmake/client.cmake:37-42` - no parallel
 solution, no wildcard project.
@@ -60,7 +60,7 @@ renderer      ->  re.EndFrame
 
 ## Settings surface
 
-**46 distinct `vr_*` cvars** (grep, this revision), all archived. The ones
+**49 distinct `vr_*` cvars** (grep, this revision), all archived. The ones
 that decide behaviour:
 
 - `vr_enable` (0) - **`CVAR_LATCH`**, so changing it needs a restart.
@@ -77,9 +77,23 @@ that decide behaviour:
   `<= 1`, because a wider FOV than the class allows would be an advantage.
   The outbound FOV is noted after the scale, so the runtime composites what
   was really drawn.
+- **One FOV for every class.** Alien classes render at 140 or 120 * 0.75 in
+  cgame; `XR_AdjustRefdef` clamps any value wider than the human 90 * 0.75 and
+  recomputes the horizontal angle from the frame aspect. The class difference
+  is carried by `vr_worldScale`, not by FOV.
+- `vr_hudScale` (0.5) / `vr_hudScaleAlien` (0.45) - the alien HUD is drawn
+  larger and gets its own shrink; both are sliders in QUALITY.
 - `vr_menuButton` (-1) - the bool index that opens the VR settings overlay.
   `-1` means the dominant stick click, which is the one stick click the
   action table leaves free (sprint is the off stick's click).
+- `vr_menuInvert` (0) - flips the overlay's vertical stick direction. The
+  packet's Y is forward-positive, so 0 is correct for the device capture;
+  this exists because the wrap-into-reverse behaviour was mistaken for an
+  inverted axis.
+- `vr_gunAimAlign` (1) - the visible gun keeps cgame's orientation (down the
+  aim) while its position follows the hand. 0 restores the prop rotating
+  with the controller. While firing the hand *is* the aim, so hand
+  orientation is used then.
 - `vr_blockDesktopInput` (1) - drops physical keyboard/mouse downs for A, B,
   X, Y, arrows, Space, Enter and left/right click while in a match and the VR
   menu is closed. Menus, console, chat and ESC always pass; synthetic
@@ -133,8 +147,10 @@ flat game is otherwise untouched.
 | 6DOF camera | verified: body yaw holds while head sweeps | device runs exist; the checkpoint 6 questions (swim, wallwalk horizon) are not recorded |
 | Controller input | 9/9 actions decode, movement and turn measured | menu-click fix came *from* the device; full census not done |
 | Hand gun / hand aim / HUD | verified in AlphaTest10/11 | **desktop only** per the release notes |
-| VR settings overlay | **desktop-verified**: draws, opens/closes by command and dominant stick click; subpages not photographed | **not run on device** |
+| VR settings overlay | **desktop-verified**: draws, opens/closes by command and dominant stick click; real-pixel size; ACTIONS page not executed yet | **not run on device** |
 | Desktop input block | implemented at SDL; build clean; synthetic-key path unchanged by construction | **not run on device** |
+| Alien FOV / HUD | FOV clamp verified in `vr.log` (Dretch 83.4x67.5 at 4:3 = human); alien HUD scale 0.45 | **not run on device** |
+| Gun prop aim | idle `aimAlign=1`, firing `aimAlign=0` in `vr.log`; model position still on the hand | **not visually checked on device** |
 | Multiplayer | listen server: created and joined (owner, 16 Nov) | other players / stock server: **not tested** |
 | Stage 1 OpenGL characterisation | n/a | **deferred by decision** |
 | Per-class world scale | implemented; class table derived from `assets/configs`, build clean | **n/a** - needs one pass per class on device |

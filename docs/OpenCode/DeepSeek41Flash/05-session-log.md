@@ -306,4 +306,73 @@ PC's `autogen.cfg`; reset to 0 so the default behaviour is back.
 - `Release/` is gitignored, so DeployReady is deliberately not in version
   control; it is a build artifact, regenerated from source.
 
+---
+
+## 20 November 2026 - device feedback round
+
+**Device logs:** `E:\tmp\VRLogs\TremWXR\trem-vr-20261020.log` (build stamp
+16 Nov 15:17, 1.9 MB). Read for class/FOV/weapon/input lines rather than the
+whole thing.
+
+### Alien FOV and HUD
+
+The log showed the problem plainly: humans rendered **99.3 x 67.0**, aliens
+**148 x 126** (Dretch 140, Basilisk 120, *0.75), because cgame takes the FOV
+from the class attribute. That is why the world swelled and the HUD looked
+wrong.
+
+- `XR_AdjustRefdef` now clamps alien `fov_y` to the human `90 * 0.75 = 67.5`
+  and recomputes `fov_x` from the frame aspect with cgame's own formula. A
+  narrower zoom still passes; only a wider value is replaced.
+- Verified in the log after the change: Dretch `sending 83.4 x 67.5` at
+  1024x768 (4:3), which is the human horizontal for that aspect.
+- Alien HUD gets `vr_hudScaleAlien`. First tried 0.35 and a screenshot showed
+  the HUD reduced to a few red pixels at the centre -- too small, not too
+  large. Default is now **0.45**, exposed in QUALITY, with the human scale
+  left alone at 0.5. The FOV lock is expected to do most of the perceptual
+  work; the slider is there for the rest.
+
+### Menu: inversion, size, readability
+
+- The "reversed" up/down was the list **wrapping**: Up from DEBUG selected
+  Close at the bottom. `XR_MenuMove` now clamps at both ends.
+- A `vr_menuInvert` toggle is in DEBUG anyway, because the stick sign is the
+  one thing a screenshot cannot settle.
+- The panel was redrawn in **real pixels** instead of the 640x480 virtual
+  space. That space stretches glyphs on a square frame, which is what "hard
+  to read" was. Font and panel now derive from frame height, capped at 56%
+  of width; 1024x768, 1400x1400 and 2800x1400 get the same physical size.
+- Screenshot at 1024x768 after the rewrite: ~42% width, crisp text, root reads
+  DEBUG / QUALITY / ACTIONS / CLOSE.
+
+### Missing controls
+
+New **ACTIONS** page: Deconstruct, Middle click (`+button3` tap), Buy ammo,
+Use medkit, Reload, Vote yes, Vote no. These are commands the PC build binds
+to keys the controller has no button for; the page is the discoverable route
+without a spare button or the console. `Y` already sends deconstruct, and the
+page says so by existing.
+
+### Guns that did not aim correctly
+
+Owner: "some guns don't aim correctly, like the blaster." The visible gun was
+rotated to the **hand** at all times, while shots go along the **head** until
+the trigger is down. When the hand was not held perfectly forward, the prop
+pointed away from the crosshair -- and the Blaster made it obvious.
+
+New `vr_gunAimAlign` (1): the prop keeps cgame's own orientation (down the
+aim) and only its **position** follows the hand. While firing, the hand is
+the aim, so hand orientation and the existing trims are used. `0` restores
+the old behaviour.
+
+Evidence in `vr.log` after the change: idle `aimAlign=1`, firing
+`aimAlign=0`; hand/model distances still agree.
+
+### Deployed
+
+`scripts/deploy_all.ps1 -SkipBuild` staged Quest, PC and
+`Release/DeployReady`; all three share the same executable
+(`38C198A75DB3919D` after the final 50%-width menu build). Not
+device-verified: the whole round is desktop/visual/evidence only.
+
 
